@@ -78,16 +78,16 @@ class StateControl(CommandSource):
                 # Calculate position error
                 error = desired_pos - current_state[joint]
                 
-                # Skip if within tolerance
+                # Set to zero velocity if within tolerance
                 if abs(error) <= self.tolerance.get(joint, 0.01):
-                    continue
-                
-                # Calculate proportional velocity using joint-specific Kp
-                kp = self.Kp.get(joint, 1.0)
-                velocity = kp * error
-                
-                # Clamp velocity to absolute max of 1.0
-                velocity = max(-1.0, min(1.0, velocity))
+                    velocity = 0.0
+                else:
+                    # Calculate proportional velocity using joint-specific Kp
+                    kp = self.Kp.get(joint, 1.0)
+                    velocity = kp * error
+                    
+                    # Clamp velocity to absolute max of 1.0
+                    velocity = max(-1.0, min(1.0, velocity))
                 
                 # Map to normalized velocity command format
                 if joint == "arm":
@@ -111,11 +111,11 @@ class StateControl(CommandSource):
 
 stowed_state = {
     "wrist_roll": 0.0,
-    "wrist_pitch": 0.0,
-    "wrist_yaw": 0,
-    # "wrist_yaw": math.radians(90),
+    "wrist_pitch": -math.radians(15),
+    # "wrist_yaw": 0,
+    "wrist_yaw": math.radians(90),
     
-    "lift": 0.15,
+    "lift": 0.20,
     "arm": 0.0,
 }
 

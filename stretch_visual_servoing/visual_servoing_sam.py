@@ -1,0 +1,139 @@
+import sys
+import os
+# Add hybrid_control directory to path (assumes it's a sibling directory)
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'hybrid_control'))
+import hybrid_control as hc
+import state_control as sc
+import normalized_velocity_control as nvc
+
+import d405_helpers as dh
+from aruco_detector import ArucoDetector
+import cv2
+import numpy as np
+
+def get_norm_target_pos(rgb_frame, drawing_frame = None):
+    # Psuedo-static variable for aruco detector
+    get_norm_target_pos.aruco_det = aruco_det = getattr(get_norm_target_pos, 'aruco_det', None) or cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_1000), cv2.aruco.DetectorParameters())
+
+    corners, ids, _ = aruco_det.detectMarkers(rgb_frame)
+    if ids is None:
+        return
+    markers = zip(corners, ids.flatten())
+    markers = [(c, i) for c, i in markers if i == 202]
+    if len(markers) == 0:
+        return
+    marker = markers[0]
+    pos = np.mean(marker[0][0], axis=0)
+    if drawing_frame is not None:
+        cv2.aruco.drawDetectedMarkers(drawing_frame, [marker[0]], np.array([[marker[1]]]))
+        
+        # Draw line from marker centroid to image center
+        center = (rgb_frame.shape[1]//2, rgb_frame.shape[0]//2)
+        marker_pos = (int(pos[0]), int(pos[1]))
+        cv2.line(drawing_frame, marker_pos, center, (0, 255, 255), 2)  # Yellow line
+        cv2.circle(drawing_frame, center, 5, (0, 0, 255), -1)  # Red dot at center
+    
+    # 0, 0 if at center, -1,0 if at left edge, etc.
+    norm_pos = ((pos[0] - rgb_frame.shape[1]/2) / (rgb_frame.shape[1]/2),
+                (pos[1] - rgb_frame.shape[0]/2) / (rgb_frame.shape[0]/2))
+    return norm_pos
+
+def get_frames():
+    # Psuedo-static variable for realsense pipeline
+    get_frames.pipeline = pipeline = getattr(get_frames, 'pipeline', None) or dh.start_d405(exposure='auto')[0]
+    
+    frames = pipeline.wait_for_frames()
+    depth_frame = frames.get_depth_frame()
+    color_frame = frames.get_color_frame()
+
+    depth_image = np.asanyarray(depth_frame.get_data())
+    color_image = np.asanyarray(color_frame.get_data())
+    return color_image, depth_image
+
+def follow_target_w_wrist(norm_target_pos, robot):
+    import math
+    
+    # Pseudo-static variables for persistence
+    follow_target_w_wrist.last_target = getattr(follow_target_w_wrist, 'last_target', None)
+    follow_target_w_wrist.persistence_count = getattr(follow_target_w_wrist, 'persistence_count', 0)
+    
+    # Pseudo-static state controller for roll correction
+    if not hasattr(follow_target_w_wrist, 'roll_controller'):
+        roll_desired_state = {"wrist_roll": 0.0}
+        follow_target_w_wrist.roll_controller = sc.StateControl(robot, roll_desired_state)
+    
+    # Update target if we have a new detection
+    if norm_target_pos is not None:
+        follow_target_w_wrist.last_target = norm_target_pos
+        follow_target_w_wrist.persistence_count = 5  # Persist for 5 calls
+    elif follow_target_w_wrist.persistence_count > 0:
+        # Use persisted target
+        norm_target_pos = follow_target_w_wrist.last_target
+        follow_target_w_wrist.persistence_count -= 1
+    else:
+        # No target and persistence expired - yield control
+        return {}
+    
+    # Start with roll correction command
+    cmd = follow_target_w_wrist.roll_controller.get_command()
+    
+    # We know norm_target_pos is not None here due to logic above
+    # Get current wrist roll angle
+    wrist_roll = robot.end_of_arm.motors['wrist_roll'].status['pos']
+    
+    # Raw visual error (negative because we want to move toward target)
+    visual_error_x = -norm_target_pos[0]  # Camera x -> yaw correction
+    visual_error_y = -norm_target_pos[1]  # Camera y -> pitch correction
+    
+    # Transform visual errors based on wrist roll using rotation matrix
+    # When roll=0: x->yaw, y->pitch
+    # When roll=90°: x->pitch, y->-yaw (rotated 90° CCW)
+    cos_roll = math.cos(wrist_roll)
+    sin_roll = math.sin(wrist_roll)
+    
+    # Apply 2D rotation matrix to transform camera coordinates to joint coordinates
+    yaw_correction = cos_roll * visual_error_x - sin_roll * visual_error_y
+    pitch_correction = sin_roll * visual_error_x + cos_roll * visual_error_y
+    
+    Kp = 1.0
+    # Add visual servoing commands to roll correction
+    cmd.update({
+        "wrist_pitch_up": max(-1.0, min(1.0, pitch_correction * Kp)),
+        "wrist_yaw_counterclockwise": max(-1.0, min(1.0, yaw_correction * Kp)),
+    })
+    
+    return cmd
+
+try:
+    controller = hc.get_controller()
+    robot = controller.robot
+    stow_controller = sc.StateControl(robot, sc.stowed_state)
+    while True:
+        rgb_image, depth_image = get_frames()
+        drawing_frame = np.copy(rgb_image)
+        norm_target_pos = get_norm_target_pos(rgb_image, drawing_frame)
+
+        cv2.imshow('Wrist Cam', drawing_frame)
+        key = cv2.waitKey(1)
+        if key == 27:  # Press 'Esc' to exit
+            break
+
+        # Get commands
+        wrist_cmd = follow_target_w_wrist(norm_target_pos, robot)
+        stow_cmd = stow_controller.get_command()
+        
+        # Split visual commands: yaw (priority) vs other axes
+        wrist_yaw_cmd = {k: v for k, v in wrist_cmd.items() if k == "wrist_yaw_counterclockwise"}
+        
+        # Layer commands: lowest to highest priority
+        cmd = nvc.zero_vel.copy()         # Baseline: all joints = 0
+        cmd = hc.merge_override(wrist_cmd, cmd)    # Stow positioning
+        cmd = hc.merge_override(stow_cmd, cmd)    # Stow dominates roll/pitch
+        cmd = hc.merge_override(wrist_yaw_cmd, cmd)     # Visual yaw tracking
+        cmd = hc.hybridize(cmd) # Human override
+        
+        print(f"Visual: {wrist_cmd} | Stow: {stow_cmd} | Final: {cmd}")
+        controller.set_command(cmd)
+finally:
+    cv2.destroyAllWindows()
+    get_frames.pipeline.stop()

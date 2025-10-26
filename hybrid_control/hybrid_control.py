@@ -36,12 +36,16 @@ joint_settings = [
 
 # Joints affected by manual mode (algorithm disabled for these joints when manual mode is on)
 manual_mode_joints = [
+    "base_forward",
+    "base_counterclockwise",
+    "lift_up",
+    "arm_out",
     "wrist_yaw_counterclockwise",
     "wrist_roll_counterclockwise", 
     "wrist_pitch_up",
-    # Uncomment to disable base movement in manual mode
-    # "base_forward",
-    # "base_counterclockwise",
+    "gripper_open",
+    "head_pan_counterclockwise",
+    "head_tilt_up",
 ]
 
 print("Hybrid Joystick Control")
@@ -172,6 +176,13 @@ def hybridize(cmd_dict):
     cmd = merge_proportional(user_cmd, cmd_dict)
 
     return cmd
+
+def get_controller():
+    """ Returns a NormalizedVelocityControl instance for the robot """
+    robot = rb.Robot()
+    robot.startup()
+    controller = NormalizedVelocityControl(robot)
+    return controller
 
 if __name__ == "__main__":
     try:

@@ -39,7 +39,6 @@ def prepare_exposure_value(value):
         return int(value)
     return None
 
-    
 def start_d405(exposure): 
     camera_info = [{'name': device.get_info(rs.camera_info.name),
                     'serial_number': device.get_info(rs.camera_info.serial_number)}

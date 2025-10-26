@@ -1,0 +1,19 @@
+All cameras that were found:
+[{'name': 'Intel RealSense D435I', 'serial_number': '239122073909'}, {'name': 'Intel RealSense D405', 'serial_number': '128422271445'}]
+
+D405 found:
+{'name': 'Intel RealSense D405', 'serial_number': '128422271445'}
+
+depth_scale = 9.999999747378752e-05
+depth_scale = 9.999999747378752e-05
+
+depth camera_info:
+{'camera_matrix': array([[378.52832031,   0.        , 318.47045898],
+       [  0.        , 378.52832031, 241.03790283],
+       [  0.        ,   0.        ,   1.        ]]), 'distortion_coefficients': array([0., 0., 0., 0., 0.]), 'distortion_model': <distortion.brown_conrady: 4>}
+
+color camera_info:
+{'camera_matrix': array([[385.62329102,   0.        , 314.58789062],
+       [  0.        , 385.1807251 , 243.30551147],
+       [  0.        ,   0.        ,   1.        ]]), 'distortion_coefficients': array([-5.52569292e-02,  5.98766357e-02, -8.58005136e-04, -9.32277253e-05,
+       -1.93387289e-02]), 'distortion_model': <distortion.inverse_brown_conrady: 2>}
