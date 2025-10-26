@@ -119,26 +119,37 @@ def apply_manual_mode(cmd_dict):
         cmd_dict = disable_joints(cmd_dict, manual_mode_joints)
     return cmd_dict
 
-def merge_proportional(cmd_gamepad, cmd_algo):
-    # User input scales from algo value toward their desired value
+def merge_proportional(cmd_primary, cmd_secondary):
+    # Primary command overrides secondary based on its magnitude
     cmd_final = {}
     
     # Handle all joints from both commands
-    all_joints = set(cmd_gamepad.keys()) | set(cmd_algo.keys())
+    all_joints = set(cmd_primary.keys()) | set(cmd_secondary.keys())
     
     for joint in all_joints:
-        user_input = cmd_gamepad.get(joint, 0.0)  # Default to 0 if missing
-        algo_input = cmd_algo.get(joint, 0.0)     # Default to 0 if missing
+        primary_input = cmd_primary.get(joint, 0.0)    # Default to 0 if missing
+        secondary_input = cmd_secondary.get(joint, 0.0) # Default to 0 if missing
         
-        if abs(user_input) < 0.05:  # No user input
-            cmd_final[joint] = algo_input
+        if abs(primary_input) < 0.05:  # No primary input
+            cmd_final[joint] = secondary_input
         else:
-            # User input interpolates between algo and desired value
-            # abs(user_input) determines how much override (0 to 1)
-            # sign(user_input) determines direction
-            override_strength = abs(user_input)
-            desired_value = 1.0 if user_input > 0 else -1.0
-            cmd_final[joint] = (1 - override_strength) * algo_input + override_strength * desired_value
+            # Primary input interpolates between secondary and desired value
+            # abs(primary_input) determines how much override (0 to 1)
+            # sign(primary_input) determines direction
+            override_strength = abs(primary_input)
+            desired_value = 1.0 if primary_input > 0 else -1.0
+            cmd_final[joint] = (1 - override_strength) * secondary_input + override_strength * desired_value
+    
+    return cmd_final
+
+def merge_override(cmd_primary, cmd_secondary):
+    # Primary command completely overrides secondary for any joints it contains
+    # Only joints missing from primary will survive from secondary
+    cmd_final = cmd_secondary.copy()  # Start with secondary as base
+    
+    # Override with all primary commands (complete replacement)
+    for joint, value in cmd_primary.items():
+        cmd_final[joint] = value
     
     return cmd_final
 
@@ -157,7 +168,7 @@ def hybridize(cmd_dict):
     # Get gamepad command
     user_cmd = get_gamepad_cmd()
 
-    # Merge commands
+    # Merge commands (user input dominates over algorithm)
     cmd = merge_proportional(user_cmd, cmd_dict)
 
     return cmd
