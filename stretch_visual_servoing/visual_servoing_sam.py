@@ -390,18 +390,18 @@ try:
     stow_controller = sc.StateControl(robot, sc.stowed_state)
     grasp_controller = sc.StateControl(robot, {"gripper": math.radians(90)})
     carry_controller = sc.StateControl(robot, { "wrist_roll": 0.0, "wrist_pitch": -math.radians(15), "wrist_yaw": math.radians(90), "lift": 0.75, "arm": 0.0, "gripper": math.radians(90) })
-    
+    zero_vel = nvc.zero_vel.copy()
+    scan_cmd = {"base_counterclockwise": 0.5}
+
     while True:
         # Get sensor data
         rgb_image, depth_image = get_frames()
         drawing_frame = np.copy(rgb_image)
 
         # Initialize commands
-        stow_cmd = stow_controller.get_command()
-        cmd = nvc.zero_vel.copy()         # Baseline: all joints = 0
-        cmd = hc.merge_override(stow_cmd, cmd)
+        cmd = zero_vel
         platform_cmd = {}
-        grasp_cmd = {}
+        stow_cmd = stow_controller.get_command()
 
         # Get target data
         norm_target_pos = get_norm_target_pos(rgb_image, drawing_frame)
@@ -412,6 +412,7 @@ try:
             grasped = is_grasped(graspable)
 
             if not grasped:
+                cmd = hc.merge_override(stow_cmd, cmd)
                 wrist_cmd = follow_target_w_wrist(norm_target_pos)      
                 if dist is not None:
                     in_grasp_window = inside_grasp_window(dist)
@@ -443,7 +444,9 @@ try:
                 print("Object grasped! Moving to carry position.")
                 carry_cmd = carry_controller.get_command()
                 cmd = hc.merge_override(carry_cmd, cmd)        # Carrying behavior
-        
+        else:
+            cmd = hc.merge_override(stow_cmd, cmd)   # No target detected - stow
+            platform_cmd = scan_cmd  # No target detected - scan
         # Layer commands: lowest to highest priority
         cmd = hc.merge_override(platform_cmd, cmd)     # Platform rotation + forward motion
         cmd = hc.hybridize(cmd) # Human override
