@@ -5,6 +5,7 @@ sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
 import hybrid_control as hc
 import state_control as sc
 import normalized_velocity_control as nvc
+import pyrealsense2 as rs
 
 import d405_helpers as dh
 from aruco_detector import ArucoDetector
@@ -12,6 +13,78 @@ import cv2
 import numpy as np
 import math
 import time
+
+def get_head_cam_frames():
+    # Pseudo-static variable for realsense pipeline
+    get_head_cam_frames.pipeline = getattr(get_head_cam_frames, 'pipeline', None)
+    
+    if get_head_cam_frames.pipeline is None:
+        # Initialize pipeline for head camera (D435)
+        pipeline = rs.pipeline()
+        config = rs.config()
+        
+        # Configure streams for D435 head camera
+        config.enable_stream(rs.stream.color, 424, 240, rs.format.bgr8, 15)
+        config.enable_stream(rs.stream.depth, 424, 240, rs.format.z16, 15)
+        
+        # Start pipeline
+        pipeline.start(config)
+        get_head_cam_frames.pipeline = pipeline
+    
+    frames = get_head_cam_frames.pipeline.wait_for_frames()
+    depth_frame = frames.get_depth_frame()
+    color_frame = frames.get_color_frame()
+
+    depth_image = np.asanyarray(depth_frame.get_data())
+    color_image = np.asanyarray(color_frame.get_data())
+    
+    # Rotate 90 degrees clockwise
+    depth_image = cv2.rotate(depth_image, cv2.ROTATE_90_CLOCKWISE)
+    color_image = cv2.rotate(color_image, cv2.ROTATE_90_CLOCKWISE)
+    
+    return color_image, depth_image
+
+def get_norm_destination_pos(rgb_frame, drawing_frame=None):
+    # Pseudo-static variables for aruco detector and persistence
+    get_norm_destination_pos.aruco_det = aruco_det = getattr(get_norm_destination_pos, 'aruco_det', None) or cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_1000), cv2.aruco.DetectorParameters())
+    get_norm_destination_pos.last_destination = getattr(get_norm_destination_pos, 'last_destination', None)
+    get_norm_destination_pos.persistence_count = getattr(get_norm_destination_pos, 'persistence_count', 0)
+
+    corners, ids, _ = aruco_det.detectMarkers(rgb_frame)
+    
+    # Try to detect destination marker (ID 12 from 4x4 dictionary)
+    current_destination = None
+    if ids is not None:
+        markers = zip(corners, ids.flatten())
+        markers = [(c, i) for c, i in markers if i == 12]  # ID 12 for destination
+        if len(markers) > 0:
+            marker = markers[0]
+            pos = np.mean(marker[0][0], axis=0)
+            
+            # Draw marker visualization in different color
+            if drawing_frame is not None:
+                cv2.aruco.drawDetectedMarkers(drawing_frame, [marker[0]], np.array([[marker[1]]]))
+                # Draw a green circle around destination marker to distinguish it
+                center = (int(pos[0]), int(pos[1]))
+                cv2.circle(drawing_frame, center, 30, (0, 255, 0), 3)  # Green circle
+            
+            # Calculate normalized position
+            current_destination = ((pos[0] - rgb_frame.shape[1]/2) / (rgb_frame.shape[1]/2),
+                                 (pos[1] - rgb_frame.shape[0]/2) / (rgb_frame.shape[0]/2))
+    
+    # Handle persistence logic
+    if current_destination is not None:
+        # Fresh detection - update and reset persistence
+        get_norm_destination_pos.last_destination = current_destination
+        get_norm_destination_pos.persistence_count = 10  # Persist for 10 calls
+        return current_destination
+    elif get_norm_destination_pos.persistence_count > 0:
+        # Use persisted destination
+        get_norm_destination_pos.persistence_count -= 1
+        return get_norm_destination_pos.last_destination
+    else:
+        # No destination and persistence expired
+        return None
 
 def get_wrist_cam_frames():
     # Psuedo-static variable for realsense pipeline
@@ -373,6 +446,9 @@ def is_graspable(norm_target_pos, target_dist):
     return False
 
 def is_grasped(graspable):
+    # Bypass for testing
+    return True
+    
     # Get current gripper position in radians
     current_gripper_pos = robot.end_of_arm.motors['stretch_gripper'].status['pos']
     
@@ -395,8 +471,10 @@ try:
 
     while True:
         # Get sensor data
-        rgb_image, depth_image = get_wrist_cam_frames()
-        drawing_frame = np.copy(rgb_image)
+        wrist_rgb, wrist_depth = get_wrist_cam_frames()
+        head_rgb, head_depth = get_head_cam_frames()
+        wrist_drawing = np.copy(wrist_rgb)
+        head_drawing = np.copy(head_rgb)
 
         # Initialize commands
         cmd = zero_vel
@@ -404,16 +482,15 @@ try:
         stow_cmd = stow_controller.get_command()
 
         # Get target data
-        norm_target_pos = get_norm_target_pos(rgb_image, drawing_frame)
-        dist = get_target_distance(rgb_image, depth_image, norm_target_pos) if norm_target_pos is not None else None
+        norm_target_pos = get_norm_target_pos(wrist_rgb, wrist_drawing)
+        dist = get_target_distance(wrist_rgb, wrist_depth, norm_target_pos) if norm_target_pos is not None else None
 
-        if norm_target_pos is not None: # If target is visible
-            graspable = is_graspable(norm_target_pos, dist)
-            grasped = is_grasped(graspable)
-
-            if not grasped:
+        graspable = is_graspable(norm_target_pos, dist)
+        grasped = is_grasped(graspable)
+        if not grasped:
+            if norm_target_pos is not None: # If target is visible
                 cmd = hc.merge_override(stow_cmd, cmd)
-                wrist_cmd = follow_target_w_wrist(norm_target_pos)      
+                wrist_cmd = follow_target_w_wrist(norm_target_pos, wrist_drawing)      
                 if dist is not None:
                     in_grasp_window = inside_grasp_window(dist)
                     print(f"Target distance: {dist:.2f}m | Grasp window: {in_grasp_window}")
@@ -427,7 +504,8 @@ try:
                         reach_cmd = reach_for_target(dist)
 
                         offset = (-0.1 * reach_auth, -0.5 * reach_auth)
-                        wrist_cmd = follow_target_w_wrist(norm_target_pos, drawing_frame, offset)
+                        wrist_drawing = np.copy(wrist_rgb)
+                        wrist_cmd = follow_target_w_wrist(norm_target_pos, wrist_drawing, offset)
                         cmd = hc.merge_override(hc.merge_mix(wrist_cmd, stow_cmd, reach_auth), cmd)
                         cmd = hc.merge_mix(reach_cmd, cmd, reach_auth)
                         yaw_error = abs(current_wrist_yaw - 0.0)  # For debug display
@@ -441,12 +519,12 @@ try:
                 wrist_yaw_cmd = {k: v for k, v in wrist_cmd.items() if k == "wrist_yaw_counterclockwise"}
                 cmd = hc.merge_override(wrist_yaw_cmd, cmd)    # Visual yaw tracking
             else:
+                cmd = hc.merge_override(stow_cmd, cmd)   # No target detected - stow
+                platform_cmd = scan_cmd  # No target detected - scan
+        else:
                 print("Object grasped! Moving to carry position.")
                 carry_cmd = carry_controller.get_command()
                 cmd = hc.merge_override(carry_cmd, cmd)        # Carrying behavior
-        else:
-            cmd = hc.merge_override(stow_cmd, cmd)   # No target detected - stow
-            platform_cmd = scan_cmd  # No target detected - scan
         # Layer commands: lowest to highest priority
         cmd = hc.merge_override(platform_cmd, cmd)     # Platform rotation + forward motion
         cmd = hc.hybridize(cmd) # Human override
@@ -454,9 +532,12 @@ try:
         controller.set_command(hc.set_limits(cmd))
 
         # Display
-        depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
-        cv2.imshow('Wrist Cam', drawing_frame)
-        cv2.imshow('Depth View', depth_colormap)
+        wrist_colormap = cv2.applyColorMap(cv2.convertScaleAbs(wrist_depth, alpha=0.03), cv2.COLORMAP_JET)
+        head_colormap = cv2.applyColorMap(cv2.convertScaleAbs(head_depth, alpha=0.03), cv2.COLORMAP_JET)
+        cv2.imshow('Wrist Cam', wrist_drawing)
+        # cv2.imshow('Wrist Depth', wrist_colormap)
+        cv2.imshow('Head Cam', head_drawing)
+        # cv2.imshow('Head Depth', head_colormap)
         key = cv2.waitKey(1)
         if key == 27:  # Press 'Esc' to exit
             break
