@@ -4,3 +4,4 @@ Cuando tengamos el objeto, empezar a buscar el aruco.
 Cuando perdemos de vista el objetivo, apuntar cabeza hacia enfrente y empezar a girar indefinidamente.
 
 De momento, la muñeca manda, y la plataforma se adapta a su posición, pero y si fuera al revez? food for thought
+Turn it into a class and use nvc get joint state

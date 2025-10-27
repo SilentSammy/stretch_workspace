@@ -11,6 +11,7 @@ from aruco_detector import ArucoDetector
 import cv2
 import numpy as np
 import math
+import time
 
 def get_frames():
     # Psuedo-static variable for realsense pipeline
@@ -53,7 +54,7 @@ def get_norm_target_pos(rgb_frame, drawing_frame = None):
     if current_target is not None:
         # Fresh detection - update and reset persistence
         get_norm_target_pos.last_target = current_target
-        get_norm_target_pos.persistence_count = 5  # Persist for 5 calls
+        get_norm_target_pos.persistence_count = 10  # Persist for 5 calls
         return current_target
     elif get_norm_target_pos.persistence_count > 0:
         # Use persisted target
@@ -63,7 +64,7 @@ def get_norm_target_pos(rgb_frame, drawing_frame = None):
         # No target and persistence expired
         return None
 
-def follow_target_w_wrist(norm_target_pos, drawing_frame=None):
+def follow_target_w_wrist(norm_target_pos, drawing_frame=None, target_offset = (0, 0)):
     import math
     
     # Pseudo-static state controller for roll correction
@@ -77,8 +78,7 @@ def follow_target_w_wrist(norm_target_pos, drawing_frame=None):
     
     # Raw visual error (negative because we want to move toward target)
     # Apply vertical offset: target (0, -0.1) instead of center (0, 0)
-    target_offset_x = 0.0
-    target_offset_y = -0.4
+    target_offset_x, target_offset_y = target_offset
     visual_error_x = -(norm_target_pos[0] + target_offset_x)  # Camera x -> yaw correction
     visual_error_y = -(norm_target_pos[1] + target_offset_y)  # Camera y -> pitch correction
     
@@ -92,7 +92,7 @@ def follow_target_w_wrist(norm_target_pos, drawing_frame=None):
     yaw_correction = cos_roll * visual_error_x - sin_roll * visual_error_y
     pitch_correction = sin_roll * visual_error_x + cos_roll * visual_error_y
     
-    Kp = 1.0
+    Kp = 0.5
     # Add visual servoing commands to roll correction
     cmd.update({
         "wrist_pitch_up": max(-1.0, min(1.0, pitch_correction * Kp)),
@@ -105,7 +105,7 @@ def follow_target_w_wrist(norm_target_pos, drawing_frame=None):
         # Convert normalized positions to pixel coordinates
         marker_x = int((norm_target_pos[0] + 1.0) * width / 2.0)
         marker_y = int((norm_target_pos[1] + 1.0) * height / 2.0)
-        target_x = int((target_offset_x + 1.0) * width / 2.0)
+        target_x = int((-target_offset_x + 1.0) * width / 2.0)
         target_y = int((-target_offset_y + 1.0) * height / 2.0)  # Flip sign for display
         
         # Draw crosshair at actual image center
@@ -275,7 +275,7 @@ def get_reach_authority(current_wrist_yaw, target_yaw=0.0, start_angle_deg=30, c
     
     return mix_ratio
 
-def reach_to_target(target_dist):    
+def reach_to_target(target_dist):
     # Target distance for reaching
     target_distance = 0.15  # meters
     
@@ -315,10 +315,64 @@ def reach_to_target(target_dist):
         "lift_up": lift_velocity
     }
 
+def is_graspable(norm_target_pos, target_dist):
+    # Pseudo-static variables for stability tracking
+    is_graspable.last_pos = getattr(is_graspable, 'last_pos', None)
+    is_graspable.last_dist = getattr(is_graspable, 'last_dist', None)
+    is_graspable.stable_start_time = getattr(is_graspable, 'stable_start_time', None)
+    
+    # Stability thresholds
+    pos_threshold = 0.1  # Position change threshold (relaxed)
+    dist_threshold = 0.5  # Distance change threshold (meters)
+    target_distance_min = 0.12  # Minimum target distance (12cm)
+    target_distance_max = 0.16  # Maximum target distance (16cm)
+    stability_duration = 3.0  # Required stable time (seconds)
+    
+    # Check if target distance is in acceptable range (12-16cm)
+    if target_dist is None or target_dist < target_distance_min or target_dist > target_distance_max:
+        # Reset stability tracking if distance is out of range
+        is_graspable.stable_start_time = None
+        is_graspable.last_pos = norm_target_pos
+        is_graspable.last_dist = target_dist
+        return False
+    
+    # Check stability if we have previous measurements
+    if is_graspable.last_pos is not None and is_graspable.last_dist is not None:
+        # Calculate position change (Euclidean distance)
+        pos_change = math.sqrt((norm_target_pos[0] - is_graspable.last_pos[0])**2 + 
+                              (norm_target_pos[1] - is_graspable.last_pos[1])**2)
+        dist_change = abs(target_dist - is_graspable.last_dist)
+        
+        # Check if currently stable
+        is_currently_stable = (pos_change <= pos_threshold and dist_change <= dist_threshold)
+        
+        if is_currently_stable:
+            # Start timing if this is the first stable frame
+            if is_graspable.stable_start_time is None:
+                is_graspable.stable_start_time = time.time()
+            
+            # Check if we've been stable long enough
+            stable_duration = time.time() - is_graspable.stable_start_time
+            if stable_duration >= stability_duration:
+                return True  # Ready to grasp!
+        else:
+            # Reset stability timer if not stable
+            is_graspable.stable_start_time = None
+    
+    # Update tracking variables
+    is_graspable.last_pos = norm_target_pos
+    is_graspable.last_dist = target_dist
+    
+    return False
+
+def is_grasped(graspable):
+    pass
+
 try:
     controller = hc.get_controller()
     robot = controller.robot
     stow_controller = sc.StateControl(robot, sc.stowed_state)
+    grasp_controller = sc.StateControl(robot, {"gripper": math.radians(90)})
     while True:
         # Get sensor data
         rgb_image, depth_image = get_frames()
@@ -330,16 +384,15 @@ try:
         cmd = hc.merge_override(stow_cmd, cmd)
         platform_cmd = {}
         wrist_yaw_cmd = {}
+        grasp_cmd = {}
 
         # Get target data
         norm_target_pos = get_norm_target_pos(rgb_image, drawing_frame)
         dist = get_target_distance(rgb_image, depth_image, norm_target_pos) if norm_target_pos is not None else None
-        
+        graspable = is_graspable(norm_target_pos, dist)
+
         if norm_target_pos is not None:
-            wrist_cmd = follow_target_w_wrist(norm_target_pos, drawing_frame)
-            # Split visual commands: yaw (always priority) vs other axes (mixed)
-            wrist_yaw_cmd = {k: v for k, v in wrist_cmd.items() if k == "wrist_yaw_counterclockwise"}
-            
+            wrist_cmd = follow_target_w_wrist(norm_target_pos)      
             if dist is not None:
                 in_grasp_window = inside_grasp_window(dist)
                 print(f"Target distance: {dist:.2f}m | Grasp window: {in_grasp_window}")
@@ -351,16 +404,24 @@ try:
                     current_wrist_yaw = robot.end_of_arm.motors['wrist_yaw'].status['pos']
                     reach_auth = get_reach_authority(current_wrist_yaw, target_yaw=0.0, start_angle_deg=30, complete_angle_deg=15)                    # Mix stow and visual commands for reaching behavior
                     reach_cmd = reach_to_target(dist)
+
+                    offset = (-0.1 * reach_auth, -0.4 * reach_auth)
+                    wrist_cmd = follow_target_w_wrist(norm_target_pos, drawing_frame, offset)
                     cmd = hc.merge_override(hc.merge_mix(wrist_cmd, stow_cmd, reach_auth), cmd)
                     cmd = hc.merge_mix(reach_cmd, cmd, reach_auth)
                     yaw_error = abs(current_wrist_yaw - 0.0)  # For debug display
-                    print(f"Wrist yaw: {math.degrees(yaw_error):.1f}° | Authority: {reach_auth:.2f}")
+                    print(f"Wrist yaw: {math.degrees(yaw_error):.1f}° | Authority: {reach_auth:.2f}" + (f" | Graspable!" if graspable else ""))
+                    if graspable:
+                        print("Grasping target!")
+                        grasp_cmd = grasp_controller.get_command()
+                        cmd = hc.merge_override(grasp_cmd, cmd)         # Grasping
                 else: # Approach behavior: face and move to target
                     platform_cmd = face_target()  # Start with rotation commands
                     platform_cmd.update(move_to_target(dist))  # Merge in forward motion
+            wrist_yaw_cmd = {k: v for k, v in wrist_cmd.items() if k == "wrist_yaw_counterclockwise"}
         
         # Layer commands: lowest to highest priority
-        cmd = hc.merge_override(wrist_yaw_cmd, cmd)    # Visual yaw tracking (always priority)
+        cmd = hc.merge_override(wrist_yaw_cmd, cmd)    # Visual yaw tracking
         cmd = hc.merge_override(platform_cmd, cmd)     # Platform rotation + forward motion
         cmd = hc.hybridize(cmd) # Human override
         
