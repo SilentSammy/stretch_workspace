@@ -13,9 +13,9 @@ import numpy as np
 import math
 import time
 
-def get_frames():
+def get_wrist_cam_frames():
     # Psuedo-static variable for realsense pipeline
-    get_frames.pipeline = pipeline = getattr(get_frames, 'pipeline', None) or dh.start_d405(exposure='auto')[0]
+    get_wrist_cam_frames.pipeline = pipeline = getattr(get_wrist_cam_frames, 'pipeline', None) or dh.start_d405(exposure='auto')[0]
     
     frames = pipeline.wait_for_frames()
     depth_frame = frames.get_depth_frame()
@@ -395,7 +395,7 @@ try:
 
     while True:
         # Get sensor data
-        rgb_image, depth_image = get_frames()
+        rgb_image, depth_image = get_wrist_cam_frames()
         drawing_frame = np.copy(rgb_image)
 
         # Initialize commands
@@ -463,4 +463,4 @@ try:
 finally:
     robot.stop()
     cv2.destroyAllWindows()
-    get_frames.pipeline.stop()
+    get_wrist_cam_frames.pipeline.stop()
