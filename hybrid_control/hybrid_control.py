@@ -157,6 +157,24 @@ def merge_override(cmd_primary, cmd_secondary):
     
     return cmd_final
 
+def merge_mix(cmd_primary, cmd_secondary, mix_ratio):
+    # Linear blend between primary and secondary commands
+    # mix_ratio: 0.0 = all secondary, 1.0 = all primary
+    
+    # Find joints that exist in both commands (these will be mixed)
+    common_joints = set(cmd_primary.keys()) & set(cmd_secondary.keys())
+    
+    # Start with merged dictionary (secondary as base, then add primary)
+    cmd_final = {**cmd_secondary, **cmd_primary}
+    
+    # Mix only the common joints using linear interpolation
+    for joint in common_joints:
+        primary_input = cmd_primary[joint]
+        secondary_input = cmd_secondary[joint]
+        cmd_final[joint] = (1 - mix_ratio) * secondary_input + mix_ratio * primary_input
+    
+    return cmd_final
+
 def hybridize(cmd_dict):
     global manual_mode, y_button_last_state
     """ Call this inside your algorithm loop to merge gamepad and algo commands """
@@ -168,7 +186,10 @@ def hybridize(cmd_dict):
         print(f"\nMode switched to: {'MANUAL' if manual_mode else 'HYBRID'}")
     
     y_button_last_state = y_button_current
-    
+
+    # Apply manual mode overrides
+    cmd_dict = apply_manual_mode(cmd_dict)
+
     # Get gamepad command
     user_cmd = get_gamepad_cmd()
 
@@ -194,7 +215,6 @@ if __name__ == "__main__":
         controller = NormalizedVelocityControl(robot)
 
         while True:
-
             # Get algorithmic command
             algo_cmd = apply_manual_mode(get_algo_cmd())
 

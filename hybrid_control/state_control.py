@@ -20,7 +20,7 @@ class StateControl(CommandSource):
             "arm": 5.0,              # m -> normalized velocity
             "head_pan": 1.0,         # rad -> normalized velocity
             "head_tilt": 1.0,        # rad -> normalized velocity
-            "gripper": 0.5           # rad -> normalized velocity
+            "gripper": 0.25           # rad -> normalized velocity
         }
         
         self.tolerance = {
@@ -115,8 +115,9 @@ stowed_state = {
     # "wrist_yaw": 0,
     "wrist_yaw": math.radians(90),
     
-    "lift": 0.20,
+    "lift": 0.15,
     "arm": 0.0,
+    "gripper": math.radians(360),
 }
 
 if __name__ == "__main__":

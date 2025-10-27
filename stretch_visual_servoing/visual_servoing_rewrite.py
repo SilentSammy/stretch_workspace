@@ -63,7 +63,7 @@ while True:
         pos = None
         print('No ArUco markers detected')
 
-    cv2.imshow('Aruco Detection', drawing_frame)
+    # cv2.imshow('Aruco Detection', drawing_frame)
     key = cv2.waitKey(1)
     if key == 27:  # Press 'Esc' to exit
         break

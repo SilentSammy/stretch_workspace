@@ -1,0 +1,6 @@
+Si el objeto se aleja conforme el brazo se va extendiendo, debemos ir disminuyendo el limite superior del grasping window de acuerdo a cuanto reach nos queda.
+Cuando perdemos de vista el objetivo, apuntar muñeca hacia enfrente y girar indefinidamente.
+Cuando tengamos el objeto, empezar a buscar el aruco.
+Cuando perdemos de vista el objetivo, apuntar cabeza hacia enfrente y empezar a girar indefinidamente.
+
+De momento, la muñeca manda, y la plataforma se adapta a su posición, pero y si fuera al revez? food for thought
