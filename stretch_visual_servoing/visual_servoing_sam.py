@@ -6,6 +6,7 @@ import hybrid_control as hc
 import state_control as sc
 import normalized_velocity_control as nvc
 import pyrealsense2 as rs
+from target_finder import ArucoTargetFinder
 
 import d405_helpers as dh
 from aruco_detector import ArucoDetector
@@ -44,48 +45,6 @@ def get_head_cam_frames():
     
     return color_image, depth_image
 
-def get_norm_destination_pos(rgb_frame, drawing_frame=None):
-    # Pseudo-static variables for aruco detector and persistence
-    get_norm_destination_pos.aruco_det = aruco_det = getattr(get_norm_destination_pos, 'aruco_det', None) or cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_1000), cv2.aruco.DetectorParameters())
-    get_norm_destination_pos.last_destination = getattr(get_norm_destination_pos, 'last_destination', None)
-    get_norm_destination_pos.persistence_count = getattr(get_norm_destination_pos, 'persistence_count', 0)
-
-    corners, ids, _ = aruco_det.detectMarkers(rgb_frame)
-    
-    # Try to detect destination marker (ID 12 from 4x4 dictionary)
-    current_destination = None
-    if ids is not None:
-        markers = zip(corners, ids.flatten())
-        markers = [(c, i) for c, i in markers if i == 12]  # ID 12 for destination
-        if len(markers) > 0:
-            marker = markers[0]
-            pos = np.mean(marker[0][0], axis=0)
-            
-            # Draw marker visualization in different color
-            if drawing_frame is not None:
-                cv2.aruco.drawDetectedMarkers(drawing_frame, [marker[0]], np.array([[marker[1]]]))
-                # Draw a green circle around destination marker to distinguish it
-                center = (int(pos[0]), int(pos[1]))
-                cv2.circle(drawing_frame, center, 30, (0, 255, 0), 3)  # Green circle
-            
-            # Calculate normalized position
-            current_destination = ((pos[0] - rgb_frame.shape[1]/2) / (rgb_frame.shape[1]/2),
-                                 (pos[1] - rgb_frame.shape[0]/2) / (rgb_frame.shape[0]/2))
-    
-    # Handle persistence logic
-    if current_destination is not None:
-        # Fresh detection - update and reset persistence
-        get_norm_destination_pos.last_destination = current_destination
-        get_norm_destination_pos.persistence_count = 10  # Persist for 10 calls
-        return current_destination
-    elif get_norm_destination_pos.persistence_count > 0:
-        # Use persisted destination
-        get_norm_destination_pos.persistence_count -= 1
-        return get_norm_destination_pos.last_destination
-    else:
-        # No destination and persistence expired
-        return None
-
 def get_wrist_cam_frames():
     # Psuedo-static variable for realsense pipeline
     get_wrist_cam_frames.pipeline = pipeline = getattr(get_wrist_cam_frames, 'pipeline', None) or dh.start_d405(exposure='auto')[0]
@@ -98,44 +57,25 @@ def get_wrist_cam_frames():
     color_image = np.asanyarray(color_frame.get_data())
     return color_image, depth_image
 
-def get_norm_target_pos(rgb_frame, drawing_frame = None):
-    # Pseudo-static variables for aruco detector and persistence
-    get_norm_target_pos.aruco_det = aruco_det = getattr(get_norm_target_pos, 'aruco_det', None) or cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_1000), cv2.aruco.DetectorParameters())
-    get_norm_target_pos.last_target = getattr(get_norm_target_pos, 'last_target', None)
-    get_norm_target_pos.persistence_count = getattr(get_norm_target_pos, 'persistence_count', 0)
+def get_norm_target_pos(rgb_frame, drawing_frame=None):
+    # Pseudo-static target finder instance
+    get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or ArucoTargetFinder(
+        target_ids=202,
+        aruco_dict=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_1000), 
+        persistence_frames=10
+    )
+    
+    return get_norm_target_pos.target_finder.get_normalized_target_position(rgb_frame, drawing_frame)
 
-    corners, ids, _ = aruco_det.detectMarkers(rgb_frame)
+def get_norm_destination_pos(rgb_frame, drawing_frame=None):
+    # Pseudo-static destination finder instance  
+    get_norm_destination_pos.destination_finder = getattr(get_norm_destination_pos, 'destination_finder', None) or ArucoTargetFinder(
+        target_ids=12, 
+        aruco_dict=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_1000),
+        persistence_frames=10
+    )
     
-    # Try to detect marker
-    current_target = None
-    if ids is not None:
-        markers = zip(corners, ids.flatten())
-        markers = [(c, i) for c, i in markers if i == 202]
-        if len(markers) > 0:
-            marker = markers[0]
-            pos = np.mean(marker[0][0], axis=0)
-            
-            # Draw marker visualization
-            if drawing_frame is not None:
-                cv2.aruco.drawDetectedMarkers(drawing_frame, [marker[0]], np.array([[marker[1]]]))
-            
-            # Calculate normalized position
-            current_target = ((pos[0] - rgb_frame.shape[1]/2) / (rgb_frame.shape[1]/2),
-                            (pos[1] - rgb_frame.shape[0]/2) / (rgb_frame.shape[0]/2))
-    
-    # Handle persistence logic
-    if current_target is not None:
-        # Fresh detection - update and reset persistence
-        get_norm_target_pos.last_target = current_target
-        get_norm_target_pos.persistence_count = 10  # Persist for 5 calls
-        return current_target
-    elif get_norm_target_pos.persistence_count > 0:
-        # Use persisted target
-        get_norm_target_pos.persistence_count -= 1
-        return get_norm_target_pos.last_target
-    else:
-        # No target and persistence expired
-        return None
+    return get_norm_destination_pos.destination_finder.get_normalized_target_position(rgb_frame, drawing_frame)
 
 def follow_target_w_wrist(norm_target_pos, drawing_frame=None, target_offset = (0, 0)):
     import math
@@ -447,7 +387,7 @@ def is_graspable(norm_target_pos, target_dist):
 
 def is_grasped(graspable):
     # Bypass for testing
-    return True
+    # return True
     
     # Get current gripper position in radians
     current_gripper_pos = robot.end_of_arm.motors['stretch_gripper'].status['pos']

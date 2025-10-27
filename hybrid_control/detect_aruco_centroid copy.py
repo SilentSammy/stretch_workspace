@@ -102,13 +102,13 @@ def follow_aruco_controller(u, v, cx, cy, fx, fy, kp=0.8, deadzone_deg=1.0, vmax
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="Seguir ArUco 4x4 moviendo la cabeza del Stretch, con imagen rotada 90° CW antes de procesar.")
-    ap.add_argument("--serial", type=str, default=None, help="Serial D435(i) (opcional)")
+    ap.add_argument("--serial", type=str, default="239122073909", help="Serial D435(i) (opcional)")
     ap.add_argument("--profile", type=str, default="640x360x60", help="WxHxFPS para color y depth")
     ap.add_argument("--dict", type=str, default="DICT_4X4_50", help="Diccionario ArUco (p.ej., DICT_4X4_50)")
-    ap.add_argument("--id", type=int, default=18, help="Si se especifica, seguir sólo ese ID")
+    ap.add_argument("--id", type=int, default=12, help="Si se especifica, seguir sólo ese ID")
     ap.add_argument("--kp", type=float, default=0.8, help="Ganancia proporcional")
     ap.add_argument("--deadzone-deg", type=float, default=1.0, help="Zona muerta (grados)")
-    ap.add_argument("--vmax", type=float, default=0.4, help="Velocidad máx. normalizada por eje [0..1]")
+    ap.add_argument("--vmax", type=float, default=0.3, help="Velocidad máx. normalizada por eje [0..1]")
     ap.add_argument("--rate", type=float, default=20.0, help="Hz del lazo")
     ap.add_argument("--show", action="store_true", help="Mostrar ventana con overlay (imagen rotada)")
     args = ap.parse_args()
