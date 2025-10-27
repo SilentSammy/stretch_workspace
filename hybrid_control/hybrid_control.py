@@ -205,6 +205,15 @@ def get_controller():
     controller = NormalizedVelocityControl(robot)
     return controller
 
+def set_limits(cmd):
+    """ Apply joint-specific velocity limits to the command dictionary """
+    limited_cmd = cmd.copy()
+    # Example: limit lift to 0.75 max velocity
+    if 'lift_up' in limited_cmd:
+        limited_cmd['lift_up'] = max(-0.75, min(0.75, limited_cmd['lift_up']))
+    # Add other joint limits as needed
+    return limited_cmd
+
 if __name__ == "__main__":
     try:
         # Initialize robot

@@ -122,8 +122,6 @@ def follow_target_w_wrist(norm_target_pos, drawing_frame=None, target_offset = (
     return cmd
 
 def face_target(target_yaw_degrees=90):
-    import math
-    
     # Get current wrist yaw position
     current_wrist_yaw = robot.end_of_arm.motors['wrist_yaw'].status['pos']
     desired_wrist_yaw = math.radians(target_yaw_degrees)  # Convert degrees to radians
@@ -275,34 +273,43 @@ def get_reach_authority(current_wrist_yaw, target_yaw=0.0, start_angle_deg=30, c
     
     return mix_ratio
 
-def reach_to_target(target_dist):
+def reach_for_target(target_dist):
     # Target distance for reaching
-    target_distance = 0.15  # meters
+    distance_setpoint = 0.15  # meters
     
     # Proportional controller for arm extension
-    distance_error = target_dist - target_distance
-    Kp_arm = 2.0  # Proportional gain for arm
+    distance_error = target_dist - distance_setpoint
+    Kp_arm = 1.0  # Proportional gain for arm
     
     # Calculate arm extension velocity (negative error means extend arm)
     arm_velocity = distance_error * Kp_arm
     
-    # Pitch correction via lift adjustment
+    # Calculate lift authority based on target distance
+    # 0.0 authority at 30cm, 1.0 authority at 20cm
+    lift_auth_start_dist = 0.50  # no lift authority
+    lift_auth_complete_dist = 0.25  # full lift authority
+    
+    # Linear interpolation with clamping
+    progress = (lift_auth_start_dist - target_dist) / (lift_auth_start_dist - lift_auth_complete_dist)
+    lift_auth = max(0.0, min(1.0, progress))
+    
+    # Pitch correction via lift adjustment (only when lift authority is active)
     current_wrist_pitch = robot.end_of_arm.motors['wrist_pitch'].status['pos']
     desired_wrist_pitch = math.radians(-15)  # target pitch
     
     # Calculate pitch error
     pitch_error = current_wrist_pitch - desired_wrist_pitch
     
-    # Skip lift adjustment if within tolerance
+    # Skip lift adjustment if within tolerance or no authority
     tolerance = math.radians(2)  # degree tolerance
-    if abs(pitch_error) <= tolerance:
+    if abs(pitch_error) <= tolerance or lift_auth == 0.0:
         lift_velocity = 0.0
     else:
-        # Use proportional control for lift adjustment
+        # Use proportional control for lift adjustment scaled by authority
         # If pitch is too low (negative error), lower lift (negative velocity)
         # If pitch is too high (positive error), raise lift (positive velocity)
         Kp_lift = 1.0
-        lift_velocity = pitch_error * Kp_lift
+        lift_velocity = pitch_error * Kp_lift * lift_auth
         
         # Clamp lift velocity
         lift_velocity = max(-1.0, min(1.0, lift_velocity))
@@ -366,13 +373,24 @@ def is_graspable(norm_target_pos, target_dist):
     return False
 
 def is_grasped(graspable):
-    pass
+    # Get current gripper position in radians
+    current_gripper_pos = robot.end_of_arm.motors['stretch_gripper'].status['pos']
+    
+    # Simple check: object is graspable and gripper is at expected starting position
+    expected_gripper_pos = math.radians(90)  # 90 degrees
+    tolerance = math.radians(15)  # degrees
+    
+    gripper_at_position = abs(current_gripper_pos - expected_gripper_pos) <= tolerance
+    
+    return graspable and gripper_at_position
 
 try:
     controller = hc.get_controller()
     robot = controller.robot
     stow_controller = sc.StateControl(robot, sc.stowed_state)
     grasp_controller = sc.StateControl(robot, {"gripper": math.radians(90)})
+    carry_controller = sc.StateControl(robot, { "wrist_roll": 0.0, "wrist_pitch": -math.radians(15), "wrist_yaw": math.radians(90), "lift": 0.75, "arm": 0.0, "gripper": math.radians(90) })
+    
     while True:
         # Get sensor data
         rgb_image, depth_image = get_frames()
@@ -383,50 +401,54 @@ try:
         cmd = nvc.zero_vel.copy()         # Baseline: all joints = 0
         cmd = hc.merge_override(stow_cmd, cmd)
         platform_cmd = {}
-        wrist_yaw_cmd = {}
         grasp_cmd = {}
 
         # Get target data
         norm_target_pos = get_norm_target_pos(rgb_image, drawing_frame)
         dist = get_target_distance(rgb_image, depth_image, norm_target_pos) if norm_target_pos is not None else None
-        graspable = is_graspable(norm_target_pos, dist)
 
-        if norm_target_pos is not None:
-            wrist_cmd = follow_target_w_wrist(norm_target_pos)      
-            if dist is not None:
-                in_grasp_window = inside_grasp_window(dist)
-                print(f"Target distance: {dist:.2f}m | Grasp window: {in_grasp_window}")
-                    
-                if in_grasp_window: # Grasping behavior: present flank to target
-                    platform_cmd = present_flank()  # Orient side toward target (0° wrist yaw)
+        if norm_target_pos is not None: # If target is visible
+            graspable = is_graspable(norm_target_pos, dist)
+            grasped = is_grasped(graspable)
 
-                    # Calculate progressive authority handover based on wrist yaw alignment
-                    current_wrist_yaw = robot.end_of_arm.motors['wrist_yaw'].status['pos']
-                    reach_auth = get_reach_authority(current_wrist_yaw, target_yaw=0.0, start_angle_deg=30, complete_angle_deg=15)                    # Mix stow and visual commands for reaching behavior
-                    reach_cmd = reach_to_target(dist)
+            if not grasped:
+                wrist_cmd = follow_target_w_wrist(norm_target_pos)      
+                if dist is not None:
+                    in_grasp_window = inside_grasp_window(dist)
+                    print(f"Target distance: {dist:.2f}m | Grasp window: {in_grasp_window}")
+                        
+                    if in_grasp_window: # Grasping behavior: present flank to target
+                        platform_cmd = present_flank()  # Orient side toward target (0° wrist yaw)
 
-                    offset = (-0.1 * reach_auth, -0.4 * reach_auth)
-                    wrist_cmd = follow_target_w_wrist(norm_target_pos, drawing_frame, offset)
-                    cmd = hc.merge_override(hc.merge_mix(wrist_cmd, stow_cmd, reach_auth), cmd)
-                    cmd = hc.merge_mix(reach_cmd, cmd, reach_auth)
-                    yaw_error = abs(current_wrist_yaw - 0.0)  # For debug display
-                    print(f"Wrist yaw: {math.degrees(yaw_error):.1f}° | Authority: {reach_auth:.2f}" + (f" | Graspable!" if graspable else ""))
-                    if graspable:
-                        print("Grasping target!")
-                        grasp_cmd = grasp_controller.get_command()
-                        cmd = hc.merge_override(grasp_cmd, cmd)         # Grasping
-                else: # Approach behavior: face and move to target
-                    platform_cmd = face_target()  # Start with rotation commands
-                    platform_cmd.update(move_to_target(dist))  # Merge in forward motion
-            wrist_yaw_cmd = {k: v for k, v in wrist_cmd.items() if k == "wrist_yaw_counterclockwise"}
+                        # Calculate progressive authority handover based on wrist yaw alignment
+                        current_wrist_yaw = robot.end_of_arm.motors['wrist_yaw'].status['pos']
+                        reach_auth = get_reach_authority(current_wrist_yaw, target_yaw=0.0, start_angle_deg=30, complete_angle_deg=15)                    # Mix stow and visual commands for reaching behavior
+                        reach_cmd = reach_for_target(dist)
+
+                        offset = (-0.1 * reach_auth, -0.5 * reach_auth)
+                        wrist_cmd = follow_target_w_wrist(norm_target_pos, drawing_frame, offset)
+                        cmd = hc.merge_override(hc.merge_mix(wrist_cmd, stow_cmd, reach_auth), cmd)
+                        cmd = hc.merge_mix(reach_cmd, cmd, reach_auth)
+                        yaw_error = abs(current_wrist_yaw - 0.0)  # For debug display
+                        if graspable:
+                            grasp_cmd = grasp_controller.get_command()
+                            cmd = hc.merge_override(grasp_cmd, cmd)         # Grasping
+                        print(f"Wrist yaw: {math.degrees(yaw_error):.1f}° | Authority: {reach_auth:.2f}, Graspable: {graspable}, Grasped: {grasped}")
+                    else: # Approach behavior: face and move to target
+                        platform_cmd = face_target()  # Start with rotation commands
+                        platform_cmd.update(move_to_target(dist))  # Merge in forward motion
+                wrist_yaw_cmd = {k: v for k, v in wrist_cmd.items() if k == "wrist_yaw_counterclockwise"}
+                cmd = hc.merge_override(wrist_yaw_cmd, cmd)    # Visual yaw tracking
+            else:
+                print("Object grasped! Moving to carry position.")
+                carry_cmd = carry_controller.get_command()
+                cmd = hc.merge_override(carry_cmd, cmd)        # Carrying behavior
         
         # Layer commands: lowest to highest priority
-        cmd = hc.merge_override(wrist_yaw_cmd, cmd)    # Visual yaw tracking
         cmd = hc.merge_override(platform_cmd, cmd)     # Platform rotation + forward motion
         cmd = hc.hybridize(cmd) # Human override
         
-        # print(f"Visual: {wrist_cmd} | Stow: {stow_cmd} | Platform: {platform_cmd} | Final: {cmd}")
-        controller.set_command(cmd)
+        controller.set_command(hc.set_limits(cmd))
 
         # Display
         depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
@@ -436,5 +458,6 @@ try:
         if key == 27:  # Press 'Esc' to exit
             break
 finally:
+    robot.stop()
     cv2.destroyAllWindows()
     get_frames.pipeline.stop()

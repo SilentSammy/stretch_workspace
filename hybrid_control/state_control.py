@@ -23,6 +23,12 @@ class StateControl(CommandSource):
             "gripper": 0.25           # rad -> normalized velocity
         }
         
+        # Maximum velocity limits (overrides default 1.0)
+        self.max_velocity = {
+            "lift": 0.75,            # Limit lift to 75% max speed
+            # Add other joint-specific limits here as needed
+        }
+        
         self.tolerance = {
             "wrist_roll": 0.02,      # rad
             "wrist_pitch": 0.02,     # rad  
@@ -86,8 +92,9 @@ class StateControl(CommandSource):
                     kp = self.Kp.get(joint, 1.0)
                     velocity = kp * error
                     
-                    # Clamp velocity to absolute max of 1.0
-                    velocity = max(-1.0, min(1.0, velocity))
+                    # Clamp velocity to joint-specific max (default 1.0)
+                    max_vel = self.max_velocity.get(joint, 1.0)
+                    velocity = max(-max_vel, min(max_vel, velocity))
                 
                 # Map to normalized velocity command format
                 if joint == "arm":
@@ -118,6 +125,15 @@ stowed_state = {
     "lift": 0.15,
     "arm": 0.0,
     "gripper": math.radians(360),
+}
+
+carry_state = {
+    "wrist_roll": 0.0,
+    "wrist_pitch": -math.radians(15),
+    "wrist_yaw": math.radians(90),
+    "lift": 0.75,
+    "arm": 0.0,
+    "gripper": math.radians(90),
 }
 
 if __name__ == "__main__":

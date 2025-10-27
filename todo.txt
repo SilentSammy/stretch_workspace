@@ -5,3 +5,6 @@ Cuando perdemos de vista el objetivo, apuntar cabeza hacia enfrente y empezar a 
 
 De momento, la muñeca manda, y la plataforma se adapta a su posición, pero y si fuera al revez? food for thought
 Turn it into a class and use nvc get joint state
+Figure out why base spins slowly with nvc
+
+Agregar modo escaneo
