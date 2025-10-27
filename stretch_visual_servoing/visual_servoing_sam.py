@@ -7,6 +7,7 @@ import state_control as sc
 import normalized_velocity_control as nvc
 import pyrealsense2 as rs
 from target_finder import ArucoTargetFinder
+from tennisfinder import TennisFinder
 
 import d405_helpers as dh
 from aruco_detector import ArucoDetector
@@ -59,11 +60,12 @@ def get_wrist_cam_frames():
 
 def get_norm_target_pos(rgb_frame, drawing_frame=None):
     # Pseudo-static target finder instance
-    get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or ArucoTargetFinder(
-        target_ids=202,
-        aruco_dict=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_1000), 
-        persistence_frames=10
-    )
+    # get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or ArucoTargetFinder(
+    #     target_ids=202,
+    #     aruco_dict=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_1000), 
+    #     persistence_frames=10
+    # )
+    get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or TennisFinder()
     
     return get_norm_target_pos.target_finder.get_normalized_target_position(rgb_frame, drawing_frame)
 
@@ -387,7 +389,7 @@ def is_graspable(norm_target_pos, target_dist):
 
 def is_grasped(graspable):
     # Bypass for testing
-    # return True
+#    return True
     
     # Get current gripper position in radians
     current_gripper_pos = robot.end_of_arm.motors['stretch_gripper'].status['pos']
@@ -443,7 +445,7 @@ try:
                         reach_auth = get_reach_authority(current_wrist_yaw, target_yaw=0.0, start_angle_deg=30, complete_angle_deg=15)                    # Mix stow and visual commands for reaching behavior
                         reach_cmd = reach_for_target(dist)
 
-                        offset = (-0.1 * reach_auth, -0.5 * reach_auth)
+                        offset = (-0.1 * reach_auth, -0.3 * reach_auth)
                         wrist_drawing = np.copy(wrist_rgb)
                         wrist_cmd = follow_target_w_wrist(norm_target_pos, wrist_drawing, offset)
                         cmd = hc.merge_override(hc.merge_mix(wrist_cmd, stow_cmd, reach_auth), cmd)

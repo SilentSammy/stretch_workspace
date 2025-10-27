@@ -134,6 +134,8 @@ carry_state = {
     "lift": 0.75,
     "arm": 0.0,
     "gripper": math.radians(90),
+    "head_pan": 0.0,
+    "head_tilt": 0.0,
 }
 
 if __name__ == "__main__":
@@ -145,7 +147,7 @@ if __name__ == "__main__":
         robot.startup()
         
         # Create state controller
-        sc = StateControl(robot, desired_state=stowed_state)
+        sc = StateControl(robot, desired_state=carry_state)
 
         # Create velocity controller
         controller = NormalizedVelocityControl(robot)
