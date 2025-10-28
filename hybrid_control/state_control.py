@@ -119,19 +119,19 @@ class StateControl(CommandSource):
 stowed_state = {
     "wrist_roll": 0.0,
     "wrist_pitch": -math.radians(15),
-    # "wrist_yaw": 0,
     "wrist_yaw": math.radians(90),
-    
-    "lift": 0.15,
+    "lift": 0.2,
     "arm": 0.0,
     "gripper": math.radians(360),
+    "head_pan": 0.0,
+    "head_tilt": 0.0,
 }
 
 carry_state = {
     "wrist_roll": 0.0,
     "wrist_pitch": -math.radians(15),
     "wrist_yaw": math.radians(90),
-    "lift": 0.75,
+    "lift": 0.2,
     "arm": 0.0,
     "gripper": math.radians(90),
     "head_pan": 0.0,

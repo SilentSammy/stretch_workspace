@@ -60,28 +60,25 @@ def get_wrist_cam_frames():
 
 def get_norm_target_pos(rgb_frame, drawing_frame=None):
     # Pseudo-static target finder instance
-    # get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or ArucoTargetFinder(
-    #     target_ids=202,
-    #     aruco_dict=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_1000), 
-    #     persistence_frames=10
-    # )
-    get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or TennisFinder()
+    get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or ArucoTargetFinder(
+        target_ids=202,
+        aruco_dict=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_1000), 
+        persistence_frames=10
+    )
+    # get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or TennisFinder()
     
     return get_norm_target_pos.target_finder.get_normalized_target_position(rgb_frame, drawing_frame)
 
-def get_norm_destination_pos(rgb_frame, drawing_frame=None):
+def get_norm_dest_pos(rgb_frame, drawing_frame=None):
     # Pseudo-static destination finder instance  
-    get_norm_destination_pos.destination_finder = getattr(get_norm_destination_pos, 'destination_finder', None) or ArucoTargetFinder(
+    get_norm_dest_pos.destination_finder = getattr(get_norm_dest_pos, 'destination_finder', None) or ArucoTargetFinder(
         target_ids=12, 
         aruco_dict=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_1000),
-        persistence_frames=10
+        persistence_frames=5
     )
-    
-    return get_norm_destination_pos.destination_finder.get_normalized_target_position(rgb_frame, drawing_frame)
+    return get_norm_dest_pos.destination_finder.get_normalized_target_position(rgb_frame, drawing_frame)
 
 def follow_target_w_wrist(norm_target_pos, drawing_frame=None, target_offset = (0, 0)):
-    import math
-    
     # Pseudo-static state controller for roll correction
     follow_target_w_wrist.roll_controller = getattr(follow_target_w_wrist, 'roll_controller', None) or sc.StateControl(robot, {"wrist_roll": 0.0})
     
@@ -136,6 +133,50 @@ def follow_target_w_wrist(norm_target_pos, drawing_frame=None, target_offset = (
     
     return cmd
 
+def follow_destination_w_head(norm_dest_pos, drawing_frame=None, target_offset=(0, 0)):
+    # Pseudo-static state controller for head centering
+    follow_destination_w_head.head_controller = getattr(follow_destination_w_head, 'head_controller', None) or sc.StateControl(robot, {"head_pan": 0.0, "head_tilt": 0.0})
+    
+    # Start with head centering command
+    cmd = follow_destination_w_head.head_controller.get_command()
+    
+    # Raw visual error (negative because we want to move toward destination)
+    target_offset_x, target_offset_y = target_offset
+    visual_error_x = -(norm_dest_pos[0] + target_offset_x)  # Camera x -> pan correction
+    visual_error_y = -(norm_dest_pos[1] + target_offset_y)  # Camera y -> tilt correction
+    
+    Kp = 0.2
+    # Add visual servoing commands to head centering
+    cmd.update({
+        "head_tilt_up": max(-1.0, min(1.0, visual_error_y * Kp)),
+        "head_pan_counterclockwise": max(-1.0, min(1.0, visual_error_x * Kp)),
+    })
+    
+    # Draw line from destination marker to target setpoint if drawing_frame is provided
+    if drawing_frame is not None:
+        height, width = drawing_frame.shape[:2]
+        # Convert normalized positions to pixel coordinates
+        marker_x = int((norm_dest_pos[0] + 1.0) * width / 2.0)
+        marker_y = int((norm_dest_pos[1] + 1.0) * height / 2.0)
+        target_x = int((-target_offset_x + 1.0) * width / 2.0)
+        target_y = int((-target_offset_y + 1.0) * height / 2.0)  # Flip sign for display
+        
+        # Draw crosshair at actual image center
+        center_x = width // 2
+        center_y = height // 2
+        crosshair_size = 10
+        cv2.line(drawing_frame, (center_x - crosshair_size, center_y), (center_x + crosshair_size, center_y), (255, 255, 255), 1)  # White horizontal line
+        cv2.line(drawing_frame, (center_x, center_y - crosshair_size), (center_x, center_y + crosshair_size), (255, 255, 255), 1)  # White vertical line
+        
+        # Draw line from destination marker to target setpoint
+        cv2.line(drawing_frame, (marker_x, marker_y), (target_x, target_y), (0, 255, 0), 2)  # Green line for destination
+        cv2.circle(drawing_frame, (target_x, target_y), 5, (0, 0, 255), -1)  # Red dot at target
+    
+    return cmd
+
+def present_flank():
+    return face_target(target_yaw_degrees=0)
+
 def face_target(target_yaw_degrees=90):
     # Get current wrist yaw position
     current_wrist_yaw = robot.end_of_arm.motors['wrist_yaw'].status['pos']
@@ -158,59 +199,6 @@ def face_target(target_yaw_degrees=90):
     platform_velocity = max(-1.0, min(1.0, platform_velocity))
     
     return {"base_counterclockwise": platform_velocity}
-
-def present_flank():
-    return face_target(target_yaw_degrees=0)
-
-def get_target_distance(rgb_frame, depth_frame, norm_target_pos):
-    # Pseudo-static variables for distance history
-    get_target_distance.history = getattr(get_target_distance, 'history', [])
-    history_size = 5
-    
-    # Convert normalized position back to pixel coordinates
-    height, width = rgb_frame.shape[:2]
-    pixel_x = int((norm_target_pos[0] + 1.0) * width / 2.0)
-    pixel_y = int((norm_target_pos[1] + 1.0) * height / 2.0)
-    
-    # Clamp to image bounds
-    pixel_x = max(0, min(width - 1, pixel_x))
-    pixel_y = max(0, min(height - 1, pixel_y))
-    
-    # RealSense D405 depth scale (converts raw depth units to meters)
-    depth_scale = 9.999999747378752e-05  # ~0.0001 meters per unit
-    
-    # Get raw depth value at target position
-    raw_depth = depth_frame[pixel_y, pixel_x]
-    
-    # Convert to actual distance in meters
-    distance_m = raw_depth * depth_scale
-    
-    # Sample a small region around the target for more robust measurement
-    sample_size = 5
-    y_start = max(0, pixel_y - sample_size//2)
-    y_end = min(height, pixel_y + sample_size//2 + 1)
-    x_start = max(0, pixel_x - sample_size//2)
-    x_end = min(width, pixel_x + sample_size//2 + 1)
-    
-    depth_region = depth_frame[y_start:y_end, x_start:x_end]
-    
-    # Filter out zero/invalid depths
-    valid_depths = depth_region[depth_region > 0]
-    
-    if len(valid_depths) > 0:
-        # Use median for robustness
-        median_raw_depth = np.median(valid_depths)
-        median_distance_m = median_raw_depth * depth_scale
-        
-        # Add to history and maintain size
-        get_target_distance.history.append(median_distance_m)
-        if len(get_target_distance.history) > history_size:
-            get_target_distance.history.pop(0)  # Remove oldest
-        
-        # Return historical average
-        return sum(get_target_distance.history) / len(get_target_distance.history)
-    else:
-        return None
 
 def move_to_target(target_dist):
     import math
@@ -240,6 +228,138 @@ def move_to_target(target_dist):
     forward_velocity = max(-max_forward_speed, min(max_forward_speed, forward_velocity))
     
     return {"base_forward": forward_velocity}
+
+def face_destination(norm_dest_pos):
+    """Rotate base to face destination marker using head pan angle"""
+    import math
+    
+    # Get current head pan position
+    current_head_pan = robot.head.status['head_pan']['pos']
+    
+    # If destination is centered in head camera, we should be facing it
+    # If destination is to the left (positive x), we need to turn left (positive base rotation)
+    # If destination is to the right (negative x), we need to turn right (negative base rotation)
+    
+    # Use head pan angle as indication of where destination is relative to robot
+    # Positive head pan = destination is to the left, so turn base left
+    # Negative head pan = destination is to the right, so turn base right
+    
+    # Skip rotation if head is centered (destination is in front)
+    tolerance = math.radians(10)  # 10 degree tolerance
+    if abs(current_head_pan) <= tolerance:
+        return {}
+    
+    # Use proportional control to rotate base in same direction as head pan
+    Kp = 2.0  # Lower gain for smoother rotation
+    platform_velocity = current_head_pan * Kp
+    
+    # Clamp velocity
+    platform_velocity = max(-1.0, min(1.0, platform_velocity))
+    
+    return {"base_counterclockwise": platform_velocity}
+
+def move_to_dest(dest_dist):
+    """Move forward/backward to reach destination at optimal distance"""
+    import math
+    
+    # Tuning parameters for destination approach
+    target_distance = 1.0  # setpoint in meters
+    max_forward_speed = 1.0  # Maximum forward velocity
+    distance_kp = 5.0  # Proportional gain for distance control
+    
+    # Check if destination distance is available
+    if dest_dist is None:
+        return {}
+    
+    # Proportional distance controller
+    distance_error = dest_dist - target_distance
+    distance_velocity = distance_kp * distance_error
+    
+    # Get current head pan alignment (destination should be centered in front)
+    current_head_pan = robot.head.status['head_pan']['pos']
+    max_align_error = math.radians(20)  # 0% authority at this angle (100% at 0°)
+    
+    # Linear authority scaling: 1.0 at 0°, 0.0 at 20°
+    authority = max(0.0, 1.0 - (abs(current_head_pan) / max_align_error))
+    
+    # Scale forward velocity by alignment authority
+    forward_velocity = distance_velocity * authority
+    
+    # Clamp velocity
+    forward_velocity = max(-max_forward_speed, min(max_forward_speed, forward_velocity))
+    
+    return {"base_forward": forward_velocity}
+
+def get_distance_generic(rgb_frame, depth_frame, norm_pos, depth_scale):
+    """Pure distance measurement function without any history management"""
+    if norm_pos is None:
+        return None
+        
+    # Convert normalized position back to pixel coordinates
+    height, width = rgb_frame.shape[:2]
+    pixel_x = int((norm_pos[0] + 1.0) * width / 2.0)
+    pixel_y = int((norm_pos[1] + 1.0) * height / 2.0)
+    
+    # Clamp to image bounds
+    pixel_x = max(0, min(width - 1, pixel_x))
+    pixel_y = max(0, min(height - 1, pixel_y))
+    
+    # Sample a small region around the target for more robust measurement
+    sample_size = 5
+    y_start = max(0, pixel_y - sample_size//2)
+    y_end = min(height, pixel_y + sample_size//2 + 1)
+    x_start = max(0, pixel_x - sample_size//2)
+    x_end = min(width, pixel_x + sample_size//2 + 1)
+    
+    depth_region = depth_frame[y_start:y_end, x_start:x_end]
+    
+    # Filter out zero/invalid depths
+    valid_depths = depth_region[depth_region > 0]
+    
+    if len(valid_depths) > 0:
+        # Use median for robustness
+        median_raw_depth = np.median(valid_depths)
+        return median_raw_depth * depth_scale
+    else:
+        return None
+
+def get_wrist_distance(rgb_frame, depth_frame, norm_pos):
+    """Get distance from wrist camera with separate history tracking"""
+    get_wrist_distance.history = getattr(get_wrist_distance, 'history', [])
+    history_size = 5
+    
+    # Get current distance measurement
+    current_distance = get_distance_generic(rgb_frame, depth_frame, norm_pos, 1e-04)
+    
+    if current_distance is not None:
+        # Add to history and maintain size
+        get_wrist_distance.history.append(current_distance)
+        if len(get_wrist_distance.history) > history_size:
+            get_wrist_distance.history.pop(0)  # Remove oldest
+        
+        # Return historical average
+        return sum(get_wrist_distance.history) / len(get_wrist_distance.history)
+    else:
+        return None
+
+def get_head_distance(rgb_frame, depth_frame, norm_pos):
+    """Get distance from head camera with separate history tracking"""
+    get_head_distance.history = getattr(get_head_distance, 'history', [])
+    history_size = 5
+    
+    # Get current distance measurement
+    current_distance = get_distance_generic(rgb_frame, depth_frame, norm_pos, 1e-03)
+    
+    if current_distance is not None:
+        # Add to history and maintain size
+        get_head_distance.history.append(current_distance)
+        if len(get_head_distance.history) > history_size:
+            get_head_distance.history.pop(0)  # Remove oldest
+        
+        # Return historical average
+        return sum(get_head_distance.history) / len(get_head_distance.history)
+    else:
+        return None
 
 def inside_grasp_window(target_dist):
     # Pseudo-static variable to track grasp window state
@@ -389,7 +509,19 @@ def is_graspable(norm_target_pos, target_dist):
 
 def is_grasped(graspable):
     # Bypass for testing
-#    return True
+    # return True
+
+    # Pseudo-static history of graspable states for noise smoothing
+    is_grasped.graspable_hist = getattr(is_grasped, 'graspable_hist', [])
+    history_size = 10  # Keep last 10 graspable states
+    
+    # Add current graspable state to history
+    is_grasped.graspable_hist.append(graspable)
+    if len(is_grasped.graspable_hist) > history_size:
+        is_grasped.graspable_hist.pop(0)  # Remove oldest
+    
+    # Consider graspable if ANY recent state was True (noise smoothing)
+    smoothed_graspable = any(is_grasped.graspable_hist)
     
     # Get current gripper position in radians
     current_gripper_pos = robot.end_of_arm.motors['stretch_gripper'].status['pos']
@@ -400,16 +532,16 @@ def is_grasped(graspable):
     
     gripper_at_position = abs(current_gripper_pos - expected_gripper_pos) <= tolerance
     
-    return graspable and gripper_at_position
+    return smoothed_graspable and gripper_at_position
 
 try:
     controller = hc.get_controller()
     robot = controller.robot
     stow_controller = sc.StateControl(robot, sc.stowed_state)
     grasp_controller = sc.StateControl(robot, {"gripper": math.radians(90)})
-    carry_controller = sc.StateControl(robot, { "wrist_roll": 0.0, "wrist_pitch": -math.radians(15), "wrist_yaw": math.radians(90), "lift": 0.75, "arm": 0.0, "gripper": math.radians(90) })
+    carry_controller = sc.StateControl(robot, sc.carry_state)
     zero_vel = nvc.zero_vel.copy()
-    scan_cmd = {"base_counterclockwise": 0.5}
+    scan_cmd = {"base_counterclockwise": -0.75}
 
     while True:
         # Get sensor data
@@ -425,13 +557,17 @@ try:
 
         # Get target data
         norm_target_pos = get_norm_target_pos(wrist_rgb, wrist_drawing)
-        dist = get_target_distance(wrist_rgb, wrist_depth, norm_target_pos) if norm_target_pos is not None else None
+        dist = get_wrist_distance(wrist_rgb, wrist_depth, norm_target_pos)
+
+        # Get destination data
+        norm_dest_pos = get_norm_dest_pos(head_rgb, head_drawing)
+        dest_dist = get_head_distance(head_rgb, head_depth, norm_dest_pos)
 
         graspable = is_graspable(norm_target_pos, dist)
         grasped = is_grasped(graspable)
         if not grasped:
+            cmd = hc.merge_override(stow_cmd, cmd)   # Stow
             if norm_target_pos is not None: # If target is visible
-                cmd = hc.merge_override(stow_cmd, cmd)
                 wrist_cmd = follow_target_w_wrist(norm_target_pos, wrist_drawing)      
                 if dist is not None:
                     in_grasp_window = inside_grasp_window(dist)
@@ -445,7 +581,7 @@ try:
                         reach_auth = get_reach_authority(current_wrist_yaw, target_yaw=0.0, start_angle_deg=30, complete_angle_deg=15)                    # Mix stow and visual commands for reaching behavior
                         reach_cmd = reach_for_target(dist)
 
-                        offset = (-0.1 * reach_auth, -0.3 * reach_auth)
+                        offset = (-0.1 * reach_auth, -0.4 * reach_auth)
                         wrist_drawing = np.copy(wrist_rgb)
                         wrist_cmd = follow_target_w_wrist(norm_target_pos, wrist_drawing, offset)
                         cmd = hc.merge_override(hc.merge_mix(wrist_cmd, stow_cmd, reach_auth), cmd)
@@ -461,12 +597,19 @@ try:
                 wrist_yaw_cmd = {k: v for k, v in wrist_cmd.items() if k == "wrist_yaw_counterclockwise"}
                 cmd = hc.merge_override(wrist_yaw_cmd, cmd)    # Visual yaw tracking
             else:
-                cmd = hc.merge_override(stow_cmd, cmd)   # No target detected - stow
                 platform_cmd = scan_cmd  # No target detected - scan
         else:
-                print("Object grasped! Moving to carry position.")
-                carry_cmd = carry_controller.get_command()
-                cmd = hc.merge_override(carry_cmd, cmd)        # Carrying behavior
+            print("Object grasped! Moving to stow position.")
+            cmd = hc.merge_override(carry_controller.get_command(), cmd)        # Carrying behavior
+
+            if dest_dist is not None: # If destination is visible
+                head_cmd = follow_destination_w_head(norm_dest_pos, head_drawing)
+                platform_cmd = face_destination(norm_dest_pos)  # Rotate to face destination
+                platform_cmd.update(move_to_dest(dest_dist))  # Merge in forward motion
+                cmd = hc.merge_override(head_cmd, cmd)      # Destination tracking
+            else:
+                platform_cmd = scan_cmd  # No destination detected - scan
+        
         # Layer commands: lowest to highest priority
         cmd = hc.merge_override(platform_cmd, cmd)     # Platform rotation + forward motion
         cmd = hc.hybridize(cmd) # Human override
