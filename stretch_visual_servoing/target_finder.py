@@ -9,7 +9,7 @@ class TargetFinder:
     def _detect_target(self, rgb_frame, drawing_frame=None):
         pass
     
-    def get_normalized_target_position(self, rgb_frame, drawing_frame=None):
+    def get_normalized_target_position(self, rgb_frame, drawing_frame=None, center_on_persistence=False):
         # Try to detect target in current frame
         pixel_target = self._detect_target(rgb_frame, drawing_frame)
         
@@ -21,9 +21,9 @@ class TargetFinder:
             self.persistence_count = self.persistence_frames
             return current_target
         elif self.persistence_count > 0:
-            # Use persisted target
+            # Use persisted target or center
             self.persistence_count -= 1
-            return self.last_target
+            return (0, 0) if center_on_persistence else self.last_target
         else:
             # No target and persistence expired
             return None

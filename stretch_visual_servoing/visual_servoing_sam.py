@@ -60,12 +60,12 @@ def get_wrist_cam_frames():
 
 def get_norm_target_pos(rgb_frame, drawing_frame=None):
     # Pseudo-static target finder instance
-    get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or ArucoTargetFinder(
-        target_ids=202,
-        aruco_dict=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_1000), 
-        persistence_frames=10
-    )
-    # get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or TennisFinder()
+    # get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or ArucoTargetFinder(
+    #     target_ids=202,
+    #     aruco_dict=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_1000), 
+    #     persistence_frames=10
+    # )
+    get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or TennisFinder()
     
     return get_norm_target_pos.target_finder.get_normalized_target_position(rgb_frame, drawing_frame)
 
@@ -76,7 +76,7 @@ def get_norm_dest_pos(rgb_frame, drawing_frame=None):
         aruco_dict=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_1000),
         persistence_frames=5
     )
-    return get_norm_dest_pos.destination_finder.get_normalized_target_position(rgb_frame, drawing_frame)
+    return get_norm_dest_pos.destination_finder.get_normalized_target_position(rgb_frame, drawing_frame, False)
 
 def follow_target_w_wrist(norm_target_pos, drawing_frame=None, target_offset = (0, 0)):
     # Pseudo-static state controller for roll correction
@@ -194,6 +194,32 @@ def face_target(target_yaw_degrees=90):
     # If wrist yawed left (positive), platform should turn right (negative) to compensate
     Kp = 1.0
     platform_velocity = yaw_error * Kp  # Negative because platform turns opposite to wrist
+    
+    # Clamp velocity
+    platform_velocity = max(-1.0, min(1.0, platform_velocity))
+    
+    return {"base_counterclockwise": platform_velocity}
+
+def present_flank_with_head():
+    return face_head(target_pan_degrees=-90)
+
+def face_head(target_pan_degrees=0):
+    # Get current head pan position
+    current_head_pan = robot.head.status['head_pan']['pos']
+    desired_head_pan = math.radians(target_pan_degrees)  # Convert degrees to radians
+    
+    # Calculate error (how much the head has panned from target)
+    pan_error = current_head_pan - desired_head_pan
+    
+    # Skip if within tolerance
+    tolerance = math.radians(5)  # 5 degree tolerance
+    if abs(pan_error) <= tolerance:
+        return {}
+    
+    # Use proportional control to rotate platform opposite to head pan
+    # If head panned left (positive), platform should turn right (negative) to compensate
+    Kp = 1.0
+    platform_velocity = pan_error * Kp  # Negative because platform turns opposite to head pan
     
     # Clamp velocity
     platform_velocity = max(-1.0, min(1.0, platform_velocity))
@@ -388,6 +414,33 @@ def inside_grasp_window(target_dist):
     
     return inside_grasp_window.in_window
 
+def inside_dest_window(dest_dist):
+    # Pseudo-static variable to track destination window state
+    inside_dest_window.in_window = getattr(inside_dest_window, 'in_window', True)
+    
+    # Base hysteresis parameters for destination approach
+    enter_min, enter_max = 0.95, 1.05
+    base_exit_min, exit_max = 0.90, 1.10
+    
+    if dest_dist is None:
+        return inside_dest_window.in_window
+    
+    # Get current arm extension and calculate extension-aware exit limit
+    arm_extension = robot.arm.status['pos']  # Current arm position in meters
+    effective_exit_min = base_exit_min - arm_extension  # Lower limit decreases as arm extends
+    effective_exit_min = max(0.50, effective_exit_min)  # Never go below 50cm for safety
+    
+    if not inside_dest_window.in_window:
+        # Outside window - check if we should enter
+        if enter_min <= dest_dist <= enter_max:
+            inside_dest_window.in_window = True
+    else:
+        # Inside window - check if we should exit (with extension-aware lower limit)
+        if dest_dist < effective_exit_min or dest_dist > exit_max:
+            inside_dest_window.in_window = False
+    
+    return inside_dest_window.in_window
+
 def get_reach_authority(current_wrist_yaw, target_yaw=0.0, start_angle_deg=30, complete_angle_deg=15):
     """Calculate progressive authority handover based on wrist yaw alignment"""
     import math
@@ -534,15 +587,28 @@ def is_grasped(graspable):
     
     return smoothed_graspable and gripper_at_position
 
+def get_interpolated_authority(current_value, zero_point, one_point):
+    if zero_point > one_point:
+        progress = (zero_point - current_value) / (zero_point - one_point)
+    else:
+        progress = (current_value - zero_point) / (one_point - zero_point)
+    return max(0.0, min(1.0, progress))
+
 try:
     controller = hc.get_controller()
     robot = controller.robot
     stow_controller = sc.StateControl(robot, sc.stowed_state)
     grasp_controller = sc.StateControl(robot, {"gripper": math.radians(90)})
     carry_controller = sc.StateControl(robot, sc.carry_state)
+    raise_controller = sc.StateControl(robot, sc.raise_state)
+    raise_controller
     zero_vel = nvc.zero_vel.copy()
     scan_cmd = {"base_counterclockwise": -0.75}
 
+    extend_controller = sc.StateControl(robot, sc.extend_state)
+    drop_controller = sc.StateControl(robot, sc.drop_state)
+
+    at_dropoff_position = False
     while True:
         # Get sensor data
         wrist_rgb, wrist_depth = get_wrist_cam_frames()
@@ -565,11 +631,12 @@ try:
 
         graspable = is_graspable(norm_target_pos, dist)
         grasped = is_grasped(graspable)
-        if not grasped:
-            cmd = hc.merge_override(stow_cmd, cmd)   # Stow
-            if norm_target_pos is not None: # If target is visible
-                wrist_cmd = follow_target_w_wrist(norm_target_pos, wrist_drawing)      
-                if dist is not None:
+
+        if not at_dropoff_position: # Grab the object and take to drop-off
+            if not grasped: # Grab the object
+                cmd = hc.merge_override(stow_cmd, cmd)   # Stow
+                if dist is not None: # If target is visible
+                    wrist_cmd = follow_target_w_wrist(norm_target_pos, wrist_drawing)      
                     in_grasp_window = inside_grasp_window(dist)
                     print(f"Target distance: {dist:.2f}m | Grasp window: {in_grasp_window}")
                         
@@ -578,7 +645,7 @@ try:
 
                         # Calculate progressive authority handover based on wrist yaw alignment
                         current_wrist_yaw = robot.end_of_arm.motors['wrist_yaw'].status['pos']
-                        reach_auth = get_reach_authority(current_wrist_yaw, target_yaw=0.0, start_angle_deg=30, complete_angle_deg=15)                    # Mix stow and visual commands for reaching behavior
+                        reach_auth = get_reach_authority(current_wrist_yaw, target_yaw=0.0, start_angle_deg=30, complete_angle_deg=15)  # Mix stow and visual commands for reaching behavior
                         reach_cmd = reach_for_target(dist)
 
                         offset = (-0.1 * reach_auth, -0.4 * reach_auth)
@@ -594,22 +661,37 @@ try:
                     else: # Approach behavior: face and move to target
                         platform_cmd = face_target()  # Start with rotation commands
                         platform_cmd.update(move_to_target(dist))  # Merge in forward motion
-                wrist_yaw_cmd = {k: v for k, v in wrist_cmd.items() if k == "wrist_yaw_counterclockwise"}
-                cmd = hc.merge_override(wrist_yaw_cmd, cmd)    # Visual yaw tracking
-            else:
-                platform_cmd = scan_cmd  # No target detected - scan
-        else:
-            print("Object grasped! Moving to stow position.")
-            cmd = hc.merge_override(carry_controller.get_command(), cmd)        # Carrying behavior
+                    wrist_yaw_cmd = {k: v for k, v in wrist_cmd.items() if k == "wrist_yaw_counterclockwise"}
+                    cmd = hc.merge_override(wrist_yaw_cmd, cmd)    # Visual yaw tracking
+                else:
+                    platform_cmd = scan_cmd  # No target detected - scan
+            else:  # Take to drop-off
+                cmd = hc.merge_override(carry_controller.get_command(), cmd)        # Carrying behavior
 
-            if dest_dist is not None: # If destination is visible
-                head_cmd = follow_destination_w_head(norm_dest_pos, head_drawing)
-                platform_cmd = face_destination(norm_dest_pos)  # Rotate to face destination
-                platform_cmd.update(move_to_dest(dest_dist))  # Merge in forward motion
-                cmd = hc.merge_override(head_cmd, cmd)      # Destination tracking
-            else:
-                platform_cmd = scan_cmd  # No destination detected - scan
-        
+                if dest_dist is not None: # If destination is visible
+                    head_cmd = follow_destination_w_head(norm_dest_pos, head_drawing)
+                    platform_cmd = face_destination(norm_dest_pos)  # Rotate to face destination
+                    platform_cmd.update(move_to_dest(dest_dist))  # Merge in forward motion
+                    cmd = hc.merge_override(head_cmd, cmd)      # Destination tracking
+
+                    in_dest_window = inside_dest_window(dest_dist)
+                    if in_dest_window:
+                        platform_cmd = present_flank_with_head()  # Orient side toward destination (0° head pan)
+                        current_head_pan = robot.head.status['head_pan']['pos']
+                        # check if head is close to -90
+                        at_dropoff_position = abs(current_head_pan - math.radians(-90)) < math.radians(10)
+                else:
+                    print("Object grasped! Moving to stow position.")
+                    platform_cmd = scan_cmd  # No destination detected - scan
+        else:
+            cmd = hc.merge_override(raise_controller.get_command(), cmd)        # Raise object
+            raise_prog = raise_controller.get_progress(carry_controller.desired_state)["lift"]
+            extend_auth = get_interpolated_authority(raise_prog, 0.8, 0.9)
+            cmd = hc.merge_mix(extend_controller.get_command(), cmd, extend_auth)  # Extend arm while raising
+            extend_prog = extend_controller.get_progress(raise_controller.desired_state)["arm"]
+            drop_auth = get_interpolated_authority(extend_prog, 0.8, 0.9)
+            cmd = hc.merge_mix(drop_controller.get_command(), cmd, drop_auth)  # Drop
+
         # Layer commands: lowest to highest priority
         cmd = hc.merge_override(platform_cmd, cmd)     # Platform rotation + forward motion
         cmd = hc.hybridize(cmd) # Human override

@@ -20,7 +20,7 @@ class StateControl(CommandSource):
             "arm": 5.0,              # m -> normalized velocity
             "head_pan": 1.0,         # rad -> normalized velocity
             "head_tilt": 1.0,        # rad -> normalized velocity
-            "gripper": 0.25           # rad -> normalized velocity
+            "gripper": 0.25          # rad -> normalized velocity
         }
         
         # Maximum velocity limits (overrides default 1.0)
@@ -74,6 +74,22 @@ class StateControl(CommandSource):
                     return False
         return True
     
+    def get_progress(self, previous_state):
+        """Calculate progress from 0 to 1 from previous_state to desired_state"""
+        current_state = self.get_current_state()
+        progress = {}
+        
+        for joint, desired_pos in self.desired_state.items():
+            if joint in current_state and joint in previous_state:
+                current_pos = current_state[joint]
+                prev_pos = previous_state[joint]
+                
+                total_distance = abs(desired_pos - prev_pos)
+                distance_covered = abs(prev_pos - current_pos)
+                progress[joint] = distance_covered / total_distance if total_distance > 0 else 1.0
+        
+        return progress
+    
     def get_command(self):
         """Return proportional velocity commands to reach desired state"""
         current_state = self.get_current_state()
@@ -116,6 +132,7 @@ class StateControl(CommandSource):
         
         return command
 
+
 stowed_state = {
     "wrist_roll": 0.0,
     "wrist_pitch": -math.radians(15),
@@ -138,6 +155,37 @@ carry_state = {
     "head_tilt": 0.0,
 }
 
+raise_state = {
+    "wrist_roll": 0.0,
+    "wrist_pitch": math.radians(0),
+    "wrist_yaw": math.radians(90),
+    "lift": 1.1,
+    "arm": 0.0,
+    "gripper": math.radians(90),
+    "head_pan": 0.0,
+    "head_tilt": 0.0,
+}
+
+extend_state = {
+    "wrist_roll": 0.0,
+    "wrist_pitch": math.radians(0),
+    "wrist_yaw": math.radians(0),
+    "lift": 1.1,
+    "arm": 0.6,
+    "gripper": math.radians(90),
+}
+
+drop_state = {
+    "wrist_roll": 0.0,
+    "wrist_pitch": math.radians(0),
+    "wrist_yaw": math.radians(0),
+    "lift": 1.1,
+    "arm": 0.6,
+    "gripper": math.radians(360),
+}
+
+
+
 if __name__ == "__main__":
     import stretch_body.robot as rb
     import hybrid_control as hc
@@ -147,7 +195,7 @@ if __name__ == "__main__":
         robot.startup()
         
         # Create state controller
-        sc = StateControl(robot, desired_state=carry_state)
+        sc = StateControl(robot, desired_state=extend_state)
 
         # Create velocity controller
         controller = NormalizedVelocityControl(robot)
