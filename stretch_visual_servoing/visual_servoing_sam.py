@@ -684,13 +684,18 @@ try:
                     print("Object grasped! Moving to stow position.")
                     platform_cmd = scan_cmd  # No destination detected - scan
         else:
-            cmd = hc.merge_override(raise_controller.get_command(), cmd)        # Raise object
-            raise_prog = raise_controller.get_progress(carry_controller.desired_state)["lift"]
-            extend_auth = get_interpolated_authority(raise_prog, 0.8, 0.9)
-            cmd = hc.merge_mix(extend_controller.get_command(), cmd, extend_auth)  # Extend arm while raising
-            extend_prog = extend_controller.get_progress(raise_controller.desired_state)["arm"]
-            drop_auth = get_interpolated_authority(extend_prog, 0.8, 0.9)
-            cmd = hc.merge_mix(drop_controller.get_command(), cmd, drop_auth)  # Drop
+            if grasped: # At drop-off position with object - raise and drop
+                cmd = hc.merge_override(raise_controller.get_command(), cmd)        # Raise object
+                raise_prog = raise_controller.get_progress(carry_controller.desired_state)["lift"]
+                extend_auth = get_interpolated_authority(raise_prog, 0.8, 0.9)
+                print(f"Extend authority: {extend_auth:.2f}")
+                cmd = hc.merge_mix(extend_controller.get_command(), cmd, extend_auth)  # Extend arm while raising
+                extend_prog = extend_controller.get_progress(raise_controller.desired_state)["arm"]
+                drop_auth = get_interpolated_authority(extend_prog, 0.8, 0.9)
+                print(f"Drop authority: {drop_auth:.2f}")
+                cmd = hc.merge_mix(drop_controller.get_command(), cmd, drop_auth)  # Drop
+            else: # After dropping, return to stowed state and reset
+                pass
 
         # Layer commands: lowest to highest priority
         cmd = hc.merge_override(platform_cmd, cmd)     # Platform rotation + forward motion
