@@ -600,15 +600,14 @@ try:
     stow_controller = sc.StateControl(robot, sc.stowed_state)
     grasp_controller = sc.StateControl(robot, {"gripper": math.radians(90)})
     carry_controller = sc.StateControl(robot, sc.carry_state)
-    raise_controller = sc.StateControl(robot, sc.raise_state)
-    raise_controller
     zero_vel = nvc.zero_vel.copy()
     scan_cmd = {"base_counterclockwise": -0.75}
 
-    extend_controller = sc.StateControl(robot, sc.extend_state)
-    drop_controller = sc.StateControl(robot, sc.drop_state)
+    drop_controller = sc.AnimatedStateControl(robot, sc.drop_seq)
 
     at_dropoff_position = False
+    dropped = False
+
     while True:
         # Get sensor data
         wrist_rgb, wrist_depth = get_wrist_cam_frames()
@@ -631,6 +630,7 @@ try:
 
         graspable = is_graspable(norm_target_pos, dist)
         grasped = is_grasped(graspable)
+
 
         if not at_dropoff_position: # Grab the object and take to drop-off
             if not grasped: # Grab the object
@@ -684,18 +684,18 @@ try:
                     print("Object grasped! Moving to stow position.")
                     platform_cmd = scan_cmd  # No destination detected - scan
         else:
-            if grasped: # At drop-off position with object - raise and drop
-                cmd = hc.merge_override(raise_controller.get_command(), cmd)        # Raise object
-                raise_prog = raise_controller.get_progress(carry_controller.desired_state)["lift"]
-                extend_auth = get_interpolated_authority(raise_prog, 0.8, 0.9)
-                print(f"Extend authority: {extend_auth:.2f}")
-                cmd = hc.merge_mix(extend_controller.get_command(), cmd, extend_auth)  # Extend arm while raising
-                extend_prog = extend_controller.get_progress(raise_controller.desired_state)["arm"]
-                drop_auth = get_interpolated_authority(extend_prog, 0.8, 0.9)
-                print(f"Drop authority: {drop_auth:.2f}")
-                cmd = hc.merge_mix(drop_controller.get_command(), cmd, drop_auth)  # Drop
-            else: # After dropping, return to stowed state and reset
-                pass
+            if not dropped:
+                cmd = hc.merge_override(drop_controller.get_command(), cmd)
+                if drop_controller.get_progress() > 0.9:
+                    dropped = True
+                    drop_controller.reverse = True
+            else:
+                cmd = hc.merge_override(drop_controller.get_command(), cmd)
+
+                if drop_controller.get_progress() < 0.1:
+                    at_dropoff_position = False # Reset for next object
+                    dropped = False
+                    drop_controller.reverse = False
 
         # Layer commands: lowest to highest priority
         cmd = hc.merge_override(platform_cmd, cmd)     # Platform rotation + forward motion

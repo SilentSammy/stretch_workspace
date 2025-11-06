@@ -18,10 +18,10 @@ def get_interpolated_authority(current_value, zero_point, one_point):
     
 class AnimatedStateControl(CommandSource):
     def __init__(self, robot, keyframes):
+        self.robot = robot
         self.frames = None
         self.rev_frames = None
         self.setup_frames(keyframes)
-        self.robot = robot
         self.reverse = False  # Default to forward sequence
 
     def setup_frames(self, keyframes):
@@ -31,7 +31,7 @@ class AnimatedStateControl(CommandSource):
         for frames in [self.frames, self.rev_frames]:
             # Create controllers for each state in test sequence
             for i in range(1, len(frames)):
-                frames[i]['controller'] = StateControl(robot, frames[i]['state'])
+                frames[i]['controller'] = StateControl(self.robot, frames[i]['state'])
                 frames[i]['progress'] = 0.0
 
     @staticmethod
@@ -121,7 +121,8 @@ class AnimatedStateControl(CommandSource):
         progresses = [frame.get('progress', 0.0) for frame in frames[1:]]
         if not progresses:
             return 0.0
-        return sum(progresses) / len(progresses)
+        prog = sum(progresses) / len(progresses)
+        return prog if not self.reverse else 1.0 - prog
 
 class StateControl(CommandSource):
     def __init__(self, robot, desired_state):
@@ -331,16 +332,25 @@ drop_seq = [
 if __name__ == "__main__":
     try:    
         # Initialize robot
-        robot = rb.Robot()
-        robot.startup()
-        controller = NormalizedVelocityControl(robot)
-        anim = AnimatedStateControl(robot, drop_seq)
-        anim.reverse = True
+        rob = rb.Robot()
+        rob.startup()
+        controller = NormalizedVelocityControl(rob)
+        anim = AnimatedStateControl(rob, drop_seq)
+        anim.reverse = False
         
         while True:
             # Get command
             cmd = anim.get_command()
-            print(f"Progress: {anim.get_progress():.2f}")
+            progress = anim.get_progress()
+            print(f"Progress: {progress:.2f}, Reverse: {anim.reverse}")
+
+            # Auto-reverse logic
+            if progress > 0.95 and not anim.reverse:
+                anim.reverse = True
+                print("Switching to reverse")
+            elif progress < 0.05 and anim.reverse:
+                anim.reverse = False
+                print("Switching to forward")
 
             # Send command
             cmd = hc.hybridize(cmd)
@@ -356,4 +366,4 @@ if __name__ == "__main__":
         if 'controller' in locals():
             controller.stop()
         if 'robot' in locals():
-            robot.stop()
+            rob.stop()
