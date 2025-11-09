@@ -67,6 +67,30 @@ def get_wide_cam_frames():
     
     return frame
 
+def stop_head_cam():
+    """Stop and cleanup head camera pipeline"""
+    if hasattr(get_head_cam_frames, 'pipeline') and get_head_cam_frames.pipeline:
+        get_head_cam_frames.pipeline.stop()
+        get_head_cam_frames.pipeline = None
+
+def stop_wrist_cam():
+    """Stop and cleanup wrist camera pipeline"""
+    if hasattr(get_wrist_cam_frames, 'pipeline') and get_wrist_cam_frames.pipeline:
+        get_wrist_cam_frames.pipeline.stop()
+        get_wrist_cam_frames.pipeline = None
+
+def stop_wide_cam():
+    """Stop and cleanup wide-angle camera"""
+    if hasattr(get_wide_cam_frames, 'cap') and get_wide_cam_frames.cap:
+        get_wide_cam_frames.cap.release()
+        get_wide_cam_frames.cap = None
+
+def stop_all_cameras():
+    """Stop and cleanup all cameras"""
+    stop_head_cam()
+    stop_wrist_cam()
+    stop_wide_cam()
+
 if __name__ == "__main__":
     try:
         while True:
@@ -87,9 +111,4 @@ if __name__ == "__main__":
                 
     finally:
         cv2.destroyAllWindows()
-        if hasattr(get_head_cam_frames, 'pipeline') and get_head_cam_frames.pipeline:
-            get_head_cam_frames.pipeline.stop()
-        if hasattr(get_wrist_cam_frames, 'pipeline') and get_wrist_cam_frames.pipeline:
-            get_wrist_cam_frames.pipeline.stop()
-        if hasattr(get_wide_cam_frames, 'cap') and get_wide_cam_frames.cap:
-            get_wide_cam_frames.cap.release()
+        stop_all_cameras()
