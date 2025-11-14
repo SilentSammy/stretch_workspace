@@ -7,13 +7,56 @@ import state_control as sc
 import normalized_velocity_control as nvc
 import pyrealsense2 as rs
 from target_finder import ArucoTargetFinder
-
 from tennisfinder import TennisFinder
+
+import d405_helpers as dh
 from aruco_detector import ArucoDetector
 import cv2
 import numpy as np
 import math
 import time
+
+def get_head_cam_frames():
+    # Pseudo-static variable for realsense pipeline
+    get_head_cam_frames.pipeline = getattr(get_head_cam_frames, 'pipeline', None)
+    
+    if get_head_cam_frames.pipeline is None:
+        # Initialize pipeline for head camera (D435)
+        pipeline = rs.pipeline()
+        config = rs.config()
+        
+        # Configure streams for D435 head camera
+        config.enable_stream(rs.stream.color, 424, 240, rs.format.bgr8, 15)
+        config.enable_stream(rs.stream.depth, 424, 240, rs.format.z16, 15)
+        
+        # Start pipeline
+        pipeline.start(config)
+        get_head_cam_frames.pipeline = pipeline
+    
+    frames = get_head_cam_frames.pipeline.wait_for_frames()
+    depth_frame = frames.get_depth_frame()
+    color_frame = frames.get_color_frame()
+
+    depth_image = np.asanyarray(depth_frame.get_data())
+    color_image = np.asanyarray(color_frame.get_data())
+    
+    # Rotate 90 degrees clockwise
+    depth_image = cv2.rotate(depth_image, cv2.ROTATE_90_CLOCKWISE)
+    color_image = cv2.rotate(color_image, cv2.ROTATE_90_CLOCKWISE)
+    
+    return color_image, depth_image
+
+def get_wrist_cam_frames():
+    # Psuedo-static variable for realsense pipeline
+    get_wrist_cam_frames.pipeline = pipeline = getattr(get_wrist_cam_frames, 'pipeline', None) or dh.start_d405(exposure='auto')[0]
+    
+    frames = pipeline.wait_for_frames()
+    depth_frame = frames.get_depth_frame()
+    color_frame = frames.get_color_frame()
+
+    depth_image = np.asanyarray(depth_frame.get_data())
+    color_image = np.asanyarray(color_frame.get_data())
+    return color_image, depth_image
 
 def get_norm_target_pos(rgb_frame, drawing_frame=None):
     # Pseudo-static target finder instance
