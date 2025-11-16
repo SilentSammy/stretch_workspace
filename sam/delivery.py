@@ -8,32 +8,13 @@ from get_cam_feeds import get_wide_cam_frames, get_head_cam_frames, get_wrist_ca
 import state_control as sc
 import normalized_velocity_control as nvc
 import pyrealsense2 as rs
-from target_finder import ArucoTargetFinder
-from tennisfinder import TennisFinder
+from object_finder import ArucoFinder, MultiFinder, get_largest
+from arucube_finder import ArucubeFinder
+from yolo_finder import YoloFinder
 import cv2
 import numpy as np
 import math
 import time
-
-def get_norm_target_pos(rgb_frame, drawing_frame=None):
-    # Pseudo-static target finder instance
-    # get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or ArucoTargetFinder(
-    #     target_ids=202,
-    #     aruco_dict=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_1000), 
-    #     persistence_frames=10
-    # )
-    get_norm_target_pos.target_finder = getattr(get_norm_target_pos, 'target_finder', None) or TennisFinder()
-    
-    return get_norm_target_pos.target_finder.get_normalized_target_position(rgb_frame, drawing_frame)
-
-def get_norm_dest_pos(rgb_frame, drawing_frame=None):
-    # Pseudo-static destination finder instance  
-    get_norm_dest_pos.destination_finder = getattr(get_norm_dest_pos, 'destination_finder', None) or ArucoTargetFinder(
-        target_ids=12, 
-        aruco_dict=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_1000),
-        persistence_frames=5
-    )
-    return get_norm_dest_pos.destination_finder.get_normalized_target_position(rgb_frame, drawing_frame, False)
 
 def follow_target_w_wrist(norm_target_pos, drawing_frame=None, target_offset = (0, 0)):
     # Pseudo-static state controller for roll correction
@@ -559,8 +540,13 @@ try:
     carry_controller = sc.StateControl(robot, sc.carry_state)
     zero_vel = nvc.zero_vel.copy()
     scan_cmd = {"base_counterclockwise": -0.75}
-
     drop_controller = sc.AnimatedStateControl(robot, sc.drop_seq)
+
+    obj_finder = MultiFinder([
+        ArucubeFinder(ArucoFinder(dictionary=cv2.aruco.DICT_4X4_50, ids=[0, 4])),
+        YoloFinder(weights="tennis.pt", conf=0.25),
+    ])
+    dest_finder = ArucoFinder(dictionary=cv2.aruco.DICT_4X4_50, ids=[12])
 
     at_dropoff_position = False
     dropped = False
@@ -578,11 +564,13 @@ try:
         stow_cmd = stow_controller.get_command()
 
         # Get target data
-        norm_target_pos = get_norm_target_pos(wrist_rgb, wrist_drawing)
+        targets = obj_finder.find(wrist_rgb)
+        norm_target_pos = get_largest(targets).norm_centroid if targets else None
         dist = get_wrist_distance(wrist_rgb, wrist_depth, norm_target_pos)
 
         # Get destination data
-        norm_dest_pos = get_norm_dest_pos(head_rgb, head_drawing)
+        destinations = dest_finder.find(head_rgb)
+        norm_dest_pos = get_largest(destinations).norm_centroid if destinations else None
         dest_dist = get_head_distance(head_rgb, head_depth, norm_dest_pos)
 
         graspable = is_graspable(norm_target_pos, dist)
